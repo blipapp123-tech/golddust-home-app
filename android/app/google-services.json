@@ -1,0 +1,99 @@
+{
+  "project_info": {
+    "project_number": "189249212411",
+    "firebase_url": "https://gdg1-e42ab-default-rtdb.firebaseio.com",
+    "project_id": "gdg1-e42ab",
+    "storage_bucket": "gdg1-e42ab.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:189249212411:android:379d405228a2a62d15055e",
+        "android_client_info": {
+          "package_name": "com.example.golddust_home_app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "189249212411-se7cpg7ami4skpa5v8od07629ola3mm4.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBZTFNVjuNT70sI9nBl2qHdzocjp5rNmfc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "189249212411-60bcjtl3ppt32io331tfu2gl6cvtfvk3.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "189249212411-6qap56d5r86ki28e3afl15envb30eq1p.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.golddustHomeApp"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:189249212411:android:4ce6d21b1f1b68dd15055e",
+        "android_client_info": {
+          "package_name": "com.rethinkandrevive1.golddustgardening"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "189249212411-io84u4rnjl2pi6sn0g00jimc6n0q963a.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.rethinkandrevive1.golddustgardening",
+            "certificate_hash": "dd91d5304629141955e4cb6ba2d528ce2d30303c"
+          }
+        },
+        {
+          "client_id": "189249212411-k91pgaev97uj0drgueoo9vteadjlqd0g.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.rethinkandrevive1.golddustgardening",
+            "certificate_hash": "b0e558d6ca806c3be909287704757a584fbee969"
+          }
+        },
+        {
+          "client_id": "189249212411-se7cpg7ami4skpa5v8od07629ola3mm4.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBZTFNVjuNT70sI9nBl2qHdzocjp5rNmfc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "189249212411-60bcjtl3ppt32io331tfu2gl6cvtfvk3.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "189249212411-6qap56d5r86ki28e3afl15envb30eq1p.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.golddustHomeApp"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
