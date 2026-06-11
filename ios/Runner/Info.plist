@@ -4,8 +4,12 @@
 <dict>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<key>NSUserTrackingUsageDescription</key>
+    <string>This helps us measure app performance and improve your GoldDust Gardening experience.</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>NSUserTrackingUsageDescription</key>
+    <string>This helps us measure app performance and improve your GoldDust Gardening experience.</string>
 	<key>CFBundleDisplayName</key>
 	<string>Golddust Home App</string>
 	<key>CFBundleExecutable</key>
@@ -66,5 +70,9 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>We use your location to show nearby gardening services availability and plant care support.</string>
+	<key>LSApplicationCategoryType</key>
+	<string></string>
 </dict>
 </plist>
