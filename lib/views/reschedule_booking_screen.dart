@@ -243,6 +243,14 @@ class _RescheduleBookingScreenState extends State<RescheduleBookingScreen> {
     }
   }
 
+  bool _isSlotAllowedForReschedule(String slot) {
+    final minutes = _slotSortMinutes(slot);
+
+    // Show only slots from 12:00 PM to 4:00 PM.
+    // 12 PM = 720 minutes, 4 PM = 960 minutes.
+    return minutes >= 12 * 60 && minutes <= 16 * 60;
+  }
+
   List<Map<String, dynamic>> _sortSlots(List<Map<String, dynamic>> slots) {
     final sorted = List<Map<String, dynamic>>.from(slots);
 
@@ -374,7 +382,8 @@ class _RescheduleBookingScreenState extends State<RescheduleBookingScreen> {
             .trim();
 
         if (slot.isEmpty) continue;
-
+        // Only show slots between 12:00 PM and 4:00 PM
+        if (!_isSlotAllowedForReschedule(slot)) continue;
         assignedSlots.add({
           'slot': slot,
           'available': true,
@@ -397,6 +406,8 @@ class _RescheduleBookingScreenState extends State<RescheduleBookingScreen> {
             .trim();
 
         if (slot.isEmpty) continue;
+        // Only show slots between 12:00 PM and 4:00 PM
+        if (!_isSlotAllowedForReschedule(slot)) continue;
 
         final assignedCountForSameSlot = assignedSlots
             .where((e) => (e['slot'] ?? '').toString() == slot)

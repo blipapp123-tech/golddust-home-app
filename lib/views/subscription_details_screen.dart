@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ui';
-
+import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import '../widgets/liquid_glass_instruction_card.dart';
@@ -57,18 +57,21 @@ class SubscriptionDetailsScreen extends StatefulWidget {
       _SubscriptionDetailsScreenState();
 }
 
-class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen> {
+class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
+    with WidgetsBindingObserver {
   int _selectedDateIndex = -1;
   //bool _isSkipping = false;
   bool _isCancellingPlan = false;
-
+  bool _isUnpaidInvoiceLoading = false;
+  List<Map<String, dynamic>> _unpaidInvoices = [];
   late List<Map<String, dynamic>> _cart;
 
   Timer? _countdownTimer;
   DateTime _now = DateTime.now();
 
   static const String _cancelPlanApiUrl = 'YOUR_CANCEL_PLAN_API_URL';
-
+  static const String _fetchUnpaidInvoicesApiUrl =
+      'https://wdr48h16e8.execute-api.ap-south-1.amazonaws.com/default/fetchCustomerUnpaidInvoices';
   static const Color _darkGreen = Color(0xFF063F20);
   static const Color _cardGreen = Color(0xFF174F2D);
   static const Color _gold = Color(0xFFFFB72B);
@@ -77,7 +80,10 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
     _cart = List<Map<String, dynamic>>.from(widget.cartItems);
+    _fetchUnpaidInvoices();
 
     _countdownTimer = Timer.periodic(const Duration(minutes: 1), (_) {
       if (!mounted) return;
@@ -87,15 +93,641 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _countdownTimer?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _fetchUnpaidInvoices(showLoader: false);
+    }
+  }
+
+  Future<void> _refreshScreenData() async {
+    await Future.wait([
+      widget.onRefreshRequested(),
+      _fetchUnpaidInvoices(showLoader: false),
+    ]);
+  }
+
+  num _toNum(dynamic value) {
+    if (value is num) return value;
+
+    final cleanValue = value
+        ?.toString()
+        .replaceAll(',', '')
+        .replaceAll('₹', '')
+        .replaceAll('Rs.', '')
+        .trim();
+
+    return num.tryParse(cleanValue ?? '0') ?? 0;
+  }
+
+  String _formatCurrency(num amount) {
+    final isNegative = amount < 0;
+    final rounded = amount.abs().round().toString();
+
+    final buffer = StringBuffer();
+
+    for (int i = 0; i < rounded.length; i++) {
+      final remainingFromRight = rounded.length - i;
+
+      buffer.write(rounded[i]);
+
+      if (remainingFromRight > 1 && (remainingFromRight - 1) % 3 == 0) {
+        buffer.write(',');
+      }
+    }
+
+    return '${isNegative ? '-' : ''}₹${buffer.toString()}';
+  }
+
+  bool _isVisibleUnpaidInvoice(Map<String, dynamic> invoice) {
+    final status = (invoice['status'] ?? '').toString().trim().toLowerCase();
+    final syncStatus =
+    (invoice['syncStatus'] ?? '').toString().trim().toLowerCase();
+    final balance = _toNum(invoice['balance']);
+    final paymentUrl = (invoice['paymentUrl'] ?? '').toString().trim();
+
+    if (status == 'paid' ||
+        status == 'closed' ||
+        status == 'void' ||
+        status == 'cancelled' ||
+        status == 'canceled') {
+      return false;
+    }
+
+    if (syncStatus == 'paid') return false;
+    if (balance <= 0) return false;
+    if (paymentUrl.isEmpty) return false;
+
+    return true;
+  }
+
+  Future<void> _fetchUnpaidInvoices({bool showLoader = true}) async {
+    if (widget.userId.trim().isEmpty) return;
+
+    try {
+      if (showLoader && mounted) {
+        setState(() => _isUnpaidInvoiceLoading = true);
+      }
+
+      final uri = Uri.parse(_fetchUnpaidInvoicesApiUrl).replace(
+        queryParameters: {
+          'userID': widget.userId.trim(),
+        },
+      );
+
+      final response = await http.get(uri);
+
+      if (response.statusCode != 200) {
+        throw Exception('Unable to fetch pending invoices');
+      }
+
+      final decoded = jsonDecode(response.body);
+
+      final Map<String, dynamic> body = decoded is Map<String, dynamic>
+          ? (decoded['body'] is String
+          ? Map<String, dynamic>.from(jsonDecode(decoded['body']))
+          : Map<String, dynamic>.from(decoded))
+          : <String, dynamic>{};
+
+      final rawInvoices = body['invoices'];
+
+      final invoices = rawInvoices is List
+          ? rawInvoices
+          .whereType<Map>()
+          .map((invoice) => Map<String, dynamic>.from(invoice))
+          .where(_isVisibleUnpaidInvoice)
+          .toList()
+          : <Map<String, dynamic>>[];
+
+      if (!mounted) return;
+
+      setState(() {
+        _unpaidInvoices = invoices;
+        _isUnpaidInvoiceLoading = false;
+      });
+    } catch (e) {
+      debugPrint('Failed to fetch unpaid invoices: $e');
+
+      if (!mounted) return;
+
+      setState(() => _isUnpaidInvoiceLoading = false);
+    }
+  }
+
+  Future<void> _openPaymentUrl(String paymentUrl) async {
+    final cleanUrl = paymentUrl.trim();
+
+    if (cleanUrl.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Payment link is not available right now.'),
+        ),
+      );
+      return;
+    }
+
+    final uri = Uri.tryParse(cleanUrl);
+
+    if (uri == null || !uri.hasScheme) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Invalid payment link.'),
+        ),
+      );
+      return;
+    }
+
+    final opened = await launchUrl(
+      uri,
+      mode: LaunchMode.externalApplication,
+    );
+
+    if (!opened && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not open payment link.'),
+        ),
+      );
+      return;
+    }
+
+    Future.delayed(const Duration(seconds: 10), () {
+      if (!mounted) return;
+      _fetchUnpaidInvoices(showLoader: false);
+    });
+  }
+
+  String _invoiceDisplayName(Map<String, dynamic> invoice) {
+    final invoiceNumber = (invoice['invoiceNumber'] ?? '').toString().trim();
+    final invoiceId = (invoice['invoiceID'] ?? '').toString().trim();
+
+    if (invoiceNumber.isNotEmpty) return invoiceNumber;
+    if (invoiceId.isNotEmpty) return 'Invoice $invoiceId';
+    return 'Invoice';
+  }
+
+  String _invoiceStatusLabel(Map<String, dynamic> invoice) {
+    final status = (invoice['status'] ?? 'Pending')
+        .toString()
+        .replaceAll('_', ' ')
+        .trim();
+
+    if (status.isEmpty) return 'Pending';
+
+    return status
+        .split(' ')
+        .where((word) => word.trim().isNotEmpty)
+        .map((word) {
+      final cleanWord = word.trim();
+      return '${cleanWord[0].toUpperCase()}${cleanWord.substring(1).toLowerCase()}';
+    }).join(' ');
+  }
+
+  num _totalPendingAmount() {
+    return _unpaidInvoices.fold<num>(
+      0,
+          (sum, invoice) => sum + _toNum(invoice['balance']),
+    );
+  }
+
+  void _showPendingInvoicesSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withOpacity(0.28),
+      builder: (_) {
+        return DraggableScrollableSheet(
+          initialChildSize: _unpaidInvoices.length > 2 ? 0.72 : 0.50,
+          minChildSize: 0.38,
+          maxChildSize: 0.88,
+          expand: false,
+          builder: (context, scrollController) {
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+              child: LiquidGlassInstructionCard(
+                radius: 30,
+                minHeight: 0,
+                padding: EdgeInsets.zero,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(30),
+                  child: Container(
+                    color: Colors.white,
+                    child: Column(
+                      children: [
+                        const SizedBox(height: 10),
+                        Container(
+                          width: 42,
+                          height: 4,
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.16),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                        ),
+                        Expanded(
+                          child: ListView(
+                            controller: scrollController,
+                            padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
+                            children: [
+                              Row(
+                                children: [
+                                  Container(
+                                    width: 52,
+                                    height: 52,
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFFFB72B)
+                                          .withOpacity(0.18),
+                                      borderRadius: BorderRadius.circular(18),
+                                    ),
+                                    child: const Icon(
+                                      Icons.receipt_long_rounded,
+                                      color: _darkGreen,
+                                      size: 28,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 14),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          'Pending Payments',
+                                          style: AppTextStyles.bodyLarge.copyWith(
+                                            fontSize: 17,
+                                            fontWeight: FontWeight.w900,
+                                            color: _darkGreen,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          '${_unpaidInvoices.length} invoice${_unpaidInvoices.length == 1 ? '' : 's'} • ${_formatCurrency(_totalPendingAmount())}',
+                                          style: AppTextStyles.caption.copyWith(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w700,
+                                            color: AppColors.textSecondary,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 18),
+                              ..._unpaidInvoices.map(_pendingInvoiceTile),
+                              const SizedBox(height: 14),
+                              Text(
+                                'Payment may take a few minutes to reflect after completion.',
+                                textAlign: TextAlign.center,
+                                style: AppTextStyles.caption.copyWith(
+                                  fontSize: 11,
+                                  color: AppColors.textSecondary,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _pendingInvoiceTile(Map<String, dynamic> invoice) {
+    final dueDate = (invoice['dueDate'] ?? '').toString().trim();
+    final amount = _toNum(invoice['balance']);
+    final paymentUrl = (invoice['paymentUrl'] ?? '').toString().trim();
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: LiquidGlassInstructionCard(
+        radius: 22,
+        minHeight: 0,
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Text(
+                    _invoiceDisplayName(invoice),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTextStyles.bodyLarge.copyWith(
+                      fontWeight: FontWeight.w900,
+                      color: _darkGreen,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFE3E3),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    _invoiceStatusLabel(invoice),
+                    style: const TextStyle(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w900,
+                      color: Color(0xFFC93535),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Text(
+                  _formatCurrency(amount),
+                  style: AppTextStyles.cardTitle.copyWith(
+                    color: _darkGreen,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                if (dueDate.isNotEmpty)
+                  Expanded(
+                    child: Text(
+                      'Due: $dueDate',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.textSecondary,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              height: 46,
+              child: ElevatedButton.icon(
+                onPressed: () => _openPaymentUrl(paymentUrl),
+                icon: const Icon(Icons.open_in_new_rounded, size: 17),
+                label: const Text(
+                  'View & Pay',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _gold,
+                  foregroundColor: Colors.black,
+                  elevation: 0,
+                  shadowColor: Colors.transparent,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(23),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _pendingPaymentWidget() {
+    if (_isUnpaidInvoiceLoading || _unpaidInvoices.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final invoiceCount = _unpaidInvoices.length;
+    final amount = _totalPendingAmount();
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: InkWell(
+        onTap: _showPendingInvoicesSheet,
+        borderRadius: BorderRadius.circular(24),
+        child: LiquidGlassInstructionCard(
+          radius: 24,
+          minHeight: 0,
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Container(
+                width: 46,
+                height: 46,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFE3E3),
+                  borderRadius: BorderRadius.circular(17),
+                  border: Border.all(
+                    color: const Color(0xFFC93535).withOpacity(0.18),
+                  ),
+                ),
+                child: const Icon(
+                  Icons.warning_amber_rounded,
+                  color: Color(0xFFC93535),
+                  size: 28,
+                ),
+              ),
+              const SizedBox(width: 13),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Payment Pending',
+                      style: AppTextStyles.bodyLarge.copyWith(
+                        fontWeight: FontWeight.w900,
+                        color: _darkGreen,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      invoiceCount == 1
+                          ? 'You have 1 unpaid invoice of ${_formatCurrency(amount)}.'
+                          : 'You have $invoiceCount unpaid invoices of ${_formatCurrency(amount)}.',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.textSecondary,
+                        fontWeight: FontWeight.w600,
+                        height: 1.25,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: _gold,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: const Text(
+                  'View',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w900,
+                    color: Colors.black,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   bool _isDoneStatus(String status) {
     final s = status.trim().toLowerCase();
     return s == 'done' ||
         s == 'completed' ||
+        s == 'Completed' ||
         s == 'complete' ||
+        s == 'closed' ||
+        s == 'finished' ||
+        s == 'visit completed' ||
+        s == 'service completed';
+  }
+
+  String _readVisitValue(
+      Map<String, dynamic> visit,
+      List<String> keys, {
+        String fallback = '',
+      }) {
+    for (final key in keys) {
+      final value = visit[key];
+      if (value != null && value.toString().trim().isNotEmpty) {
+        return value.toString().trim();
+      }
+    }
+
+    final nestedBooking = visit['booking'];
+    if (nestedBooking is Map) {
+      final nested = Map<String, dynamic>.from(nestedBooking);
+      for (final key in keys) {
+        final value = nested[key];
+        if (value != null && value.toString().trim().isNotEmpty) {
+          return value.toString().trim();
+        }
+      }
+    }
+
+    return fallback;
+  }
+
+  String _getCurrentCycleDealIdFromVisits(List<Map<String, dynamic>> rawVisits) {
+    final today = DateTime(_now.year, _now.month, _now.day);
+
+    final Map<String, List<Map<String, dynamic>>> groupedByDeal = {};
+
+    for (final visit in rawVisits) {
+      final dealId = _readVisitValue(
+        visit,
+        [
+          'dealID',
+          'dealId',
+          'deal_id',
+          'Deal_ID',
+        ],
+      );
+
+      if (dealId.isEmpty) continue;
+
+      groupedByDeal.putIfAbsent(dealId, () => []);
+      groupedByDeal[dealId]!.add(visit);
+    }
+
+    if (groupedByDeal.isEmpty) return '';
+
+    String currentDealId = '';
+    DateTime? nearestUpcomingDate;
+
+    groupedByDeal.forEach((dealId, visits) {
+      for (final visit in visits) {
+        final dateStr = _readVisitValue(
+          visit,
+          [
+            'date',
+            'dueDate',
+            'Due_Date',
+            'bookingDate',
+          ],
+        );
+
+        final visitDate = _parseVisitDate(dateStr);
+        if (visitDate == null) continue;
+
+        final visitDateOnly = DateTime(
+          visitDate.year,
+          visitDate.month,
+          visitDate.day,
+        );
+
+        if (visitDateOnly.isBefore(today)) continue;
+
+        if (nearestUpcomingDate == null ||
+            visitDateOnly.isBefore(nearestUpcomingDate!)) {
+          nearestUpcomingDate = visitDateOnly;
+          currentDealId = dealId;
+        }
+      }
+    });
+
+    // Fallback: if no upcoming visit exists, choose the deal having the latest visit.
+    if (currentDealId.isEmpty) {
+      DateTime? latestDate;
+
+      groupedByDeal.forEach((dealId, visits) {
+        for (final visit in visits) {
+          final dateStr = _readVisitValue(
+            visit,
+            [
+              'date',
+              'dueDate',
+              'Due_Date',
+              'bookingDate',
+            ],
+          );
+
+          final visitDate = _parseVisitDate(dateStr);
+          if (visitDate == null) continue;
+
+          if (latestDate == null || visitDate.isAfter(latestDate!)) {
+            latestDate = visitDate;
+            currentDealId = dealId;
+          }
+        }
+      });
+    }
+
+    debugPrint('✅ Current cycle dealID detected: $currentDealId');
+
+    return currentDealId;
+  }
+
+  bool _isVisitDoneFromStatus(String status) {
+    final s = status.trim().toLowerCase();
+
+    return s == 'completed' ||
+        s == 'complete' ||
+        s == 'done' ||
         s == 'closed' ||
         s == 'finished' ||
         s == 'visit completed' ||
@@ -114,30 +746,119 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen> {
     final rawScheduledVisits = widget.booking['allScheduledVisits'];
 
     if (rawScheduledVisits is List && rawScheduledVisits.isNotEmpty) {
-      for (final rawVisit in rawScheduledVisits) {
-        if (rawVisit is! Map) continue;
+      final rawVisits = rawScheduledVisits
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
 
-        final visit = Map<String, dynamic>.from(rawVisit);
-        final date = (visit['date'] ?? '').toString().trim();
+      String currentCycleDealId = (
+          widget.booking['currentCycleDealID'] ??
+              widget.booking['dealID'] ??
+              widget.booking['dealId'] ??
+              widget.booking['deal_id'] ??
+              widget.booking['Deal_ID'] ??
+              ''
+      ).toString().trim();
+
+      if (currentCycleDealId.isEmpty) {
+        currentCycleDealId = _getCurrentCycleDealIdFromVisits(rawVisits);
+      }
+
+      debugPrint('🧾 Total raw visits received: ${rawVisits.length}');
+      debugPrint('🧾 Filtering visits for current cycle dealID: $currentCycleDealId');
+
+      for (final visit in rawVisits) {
+        final visitDealId = _readVisitValue(
+          visit,
+          [
+            'dealID',
+            'dealId',
+            'deal_id',
+            'Deal_ID',
+          ],
+        );
+
+        // If dealID exists, show only current cycle visits.
+        // If dealID is missing in data, do not block the visit.
+        if (currentCycleDealId.isNotEmpty &&
+            visitDealId.isNotEmpty &&
+            visitDealId != currentCycleDealId) {
+          continue;
+        }
+
+        final date = _readVisitValue(
+          visit,
+          [
+            'date',
+            'dueDate',
+            'Due_Date',
+            'bookingDate',
+          ],
+        );
+
         if (date.isEmpty) continue;
 
         final visitDate = _parseVisitDate(date);
         if (visitDate == null) continue;
 
-        final visitStatus = (visit['status'] ?? '').toString().trim();
-        final isDone = visit['isDone'] == true || _isDoneStatus(visitStatus);
+        final visitStatus = _readVisitValue(
+          visit,
+          [
+            'taskStatus',
+            'TaskStatus',
+            'task_status',
+            'status',
+            'bookingStatus',
+            'visitStatus',
+            'serviceStatus',
+          ],
+        );
+
+        final isDone = visit['isDone'] == true || _isVisitDoneFromStatus(visitStatus);
+
+        final nestedBooking = visit['booking'] is Map
+            ? Map<String, dynamic>.from(visit['booking'] as Map)
+            : Map<String, dynamic>.from(visit);
 
         visits.add({
           'date': date,
-          'mali': (visit['mali'] ?? visit['assignedMali'] ?? 'Not assigned')
-              .toString(),
-          'timeSlot': (visit['timeSlot'] ?? visit['visitTimeSlot1'] ?? 'N/A')
-              .toString(),
+          'dueDate': date,
+          'dealID': visitDealId,
+          'mali': _readVisitValue(
+            visit,
+            [
+              'mali',
+              'assignedMali',
+              'assignedMaali',
+              'visitingPerson',
+              'visitingPersonName',
+            ],
+            fallback: 'Not assigned',
+          ),
+          'assignedMaliId': _readVisitValue(
+            visit,
+            [
+              'assignedMaliId',
+              'assignedMaliID',
+              'assignedMaaliId',
+              'assignedMaaliID',
+              'maaliNo',
+              'maliNo',
+            ],
+          ),
+          'timeSlot': _readVisitValue(
+            visit,
+            [
+              'timeSlot',
+              'visitTimeSlot1',
+              'slot',
+              'scheduleTime',
+            ],
+            fallback: 'N/A',
+          ),
           'status': visitStatus,
           'isDone': isDone,
-          'booking': visit['booking'] is Map
-              ? Map<String, dynamic>.from(visit['booking'] as Map)
-              : widget.booking,
+          'booking': nestedBooking,
           'isPast': visitDate.isBefore(today),
           'isToday': visitDate.isAtSameMomentAs(today),
           'isFuture': visitDate.isAfter(today),
@@ -147,6 +868,19 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen> {
 
       visits.sort((a, b) =>
           (a['visitDate'] as DateTime).compareTo(b['visitDate'] as DateTime));
+
+      debugPrint('✅ Current cycle visits shown: ${visits.length}');
+
+      for (final visit in visits) {
+        debugPrint(
+          '✅ Visit shown => date=${visit['date']}, '
+              'dealID=${visit['dealID']}, '
+              'status=${visit['status']}, '
+              'isDone=${visit['isDone']}, '
+              'mali=${visit['mali']}',
+        );
+      }
+
       return visits;
     }
 
@@ -170,11 +904,22 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen> {
       final visitDate = _parseVisitDate(date);
       if (visitDate == null) continue;
 
-      final visitStatus = (widget.booking['status'] ?? '').toString().trim();
-      final isDone = _isDoneStatus(visitStatus);
+      final visitStatus = (widget.booking['taskStatus'] ??
+          widget.booking['TaskStatus'] ??
+          widget.booking['task_status'] ??
+          widget.booking['status'] ??
+          widget.booking['bookingStatus'] ??
+          widget.booking['visitStatus'] ??
+          widget.booking['serviceStatus'] ??
+          '')
+          .toString()
+          .trim();
+
+      final isDone = _isVisitDoneFromStatus(visitStatus);
 
       visits.add({
         'date': date,
+        'dueDate': date,
         'mali': assignedMali,
         'timeSlot': timeSlot,
         'status': visitStatus,
@@ -601,7 +1346,13 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen> {
           userName: widget.userName,
           booking: widget.booking,
           oldDate: '${parts[0]}-${parts[1]}-${parts[2].substring(2)}',
-          assignedMaliId: widget.booking['maaliNo'] ?? '',
+          assignedMaliId: (
+              widget.booking['maaliNo'] ??
+                  widget.booking['maliNo'] ??
+                  widget.booking['assignedMaliId'] ??
+                  widget.booking['assignedMaaliId'] ??
+                  ''
+          ).toString(),
         ),
       ),
     ).then((val) async {
@@ -786,6 +1537,50 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen> {
     );
   }
 
+  Map<String, dynamic> _getVisitProgressStats(List<Map<String, dynamic>> visits) {
+    final totalVisits = visits.length;
+
+    final completedVisits = visits.where((visit) {
+      final isDone = visit['isDone'] == true;
+
+      final isPast = visit['isPast'] == true;
+
+      final status = (visit['taskStatus'] ??
+          visit['TaskStatus'] ??
+          visit['task_status'] ??
+          visit['status'] ??
+          visit['visitStatus'] ??
+          visit['bookingStatus'] ??
+          visit['serviceStatus'] ??
+          '')
+          .toString()
+          .trim()
+          .toLowerCase();
+
+      return isDone ||
+          isPast ||
+          status == 'done' ||
+          status == 'completed' ||
+          status == 'complete' ||
+          status == 'closed' ||
+          status == 'finished' ||
+          status == 'visit completed' ||
+          status == 'service completed';
+    }).length;
+
+    final remainingVisits =
+    (totalVisits - completedVisits).clamp(0, totalVisits);
+
+    final progress = totalVisits == 0 ? 0.0 : completedVisits / totalVisits;
+
+    return {
+      'totalVisits': totalVisits,
+      'completedVisits': completedVisits,
+      'remainingVisits': remainingVisits,
+      'progress': progress,
+    };
+  }
+
   Widget _softCard({
     required Widget child,
     EdgeInsets padding = const EdgeInsets.all(16),
@@ -806,9 +1601,17 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen> {
     required String planName,
     required String status,
     required Map<String, dynamic>? upcomingVisit,
-    required int daysLeft,
+    required List<Map<String, dynamic>> visits,
     required bool isExpired,
   }) {
+    final visitStats = _getVisitProgressStats(visits);
+
+    final totalVisits = visitStats['totalVisits'] as int;
+    final completedVisits = visitStats['completedVisits'] as int;
+    final remainingVisits = visitStats['remainingVisits'] as int;
+    final progress = visitStats['progress'] as double;
+    final progressPercent = (progress * 100).round();
+
     final upcomingText =
     isExpired ? 'Cycle completed' : _getUpcomingVisitLabel(upcomingVisit);
 
@@ -871,7 +1674,7 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen> {
           Row(
             children: [
               Text(
-                'Renewal Status',
+                'Visit Progress',
                 style: AppTextStyles.chip.copyWith(
                   fontWeight: FontWeight.w500,
                   color: const Color(0xFFD7E7D9),
@@ -879,7 +1682,11 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen> {
               ),
               const Spacer(),
               Text(
-                isExpired ? 'Cycle completed' : '$daysLeft Days left',
+                isExpired
+                    ? 'Cycle completed'
+                    : remainingVisits == 1
+                    ? '1 visit left'
+                    : '$remainingVisits visits left',
                 style: AppTextStyles.chip.copyWith(
                   fontWeight: FontWeight.w700,
                   color: Colors.white,
@@ -891,12 +1698,20 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen> {
           ClipRRect(
             borderRadius: BorderRadius.circular(8),
             child: LinearProgressIndicator(
-              value: isExpired ? 1 : (daysLeft <= 0 ? 0.08 : 0.68),
+              value: progress.clamp(0.0, 1.0),
               minHeight: 5,
               backgroundColor: Colors.white.withOpacity(0.20),
               valueColor: AlwaysStoppedAnimation<Color>(
                 isExpired ? Colors.orange : _gold,
               ),
+            ),
+          ),
+          const SizedBox(height: 7),
+          Text(
+            '$completedVisits of $totalVisits visits completed • $progressPercent%',
+            style: AppTextStyles.tiny.copyWith(
+              fontWeight: FontWeight.w700,
+              color: const Color(0xFFD7E7D9),
             ),
           ),
           const SizedBox(height: 16),
@@ -1875,19 +2690,19 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen> {
         'title': 'Sikotiya Palm - 10 inch',
         'subtitle': 'Dense Indoor Plant',
         'price': '₹359.00',
-        'image': 'assets/images/sikotiya_palm.png',
+        'image': 'assets/images/sikotiya_palm.webp',
       },
       {
         'title': 'Metal Rectangular Railing Planter - White',
         'subtitle': 'Outdoor Planter',
         'price': '₹310.00',
-        'image': 'assets/images/railing_planter.png',
+        'image': 'assets/images/railing_planter.webp',
       },
       {
         'title': 'Ixora - 6 inch',
         'subtitle': 'Outdoor Flowering Plant',
         'price': '₹129.00',
-        'image': 'assets/images/ixora.png',
+        'image': 'assets/images/ixora.webp',
       },
     ];
 
@@ -2224,7 +3039,6 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen> {
 
     final bookingDate = _getBookingDateForProducts();
 
-    final daysLeft = _getDaysLeftForPlan(visits);
     final isPlanExpired = _isPlanExpired(visits);
 
     return Scaffold(
@@ -2241,7 +3055,7 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen> {
         ),
       ),
       body: RefreshIndicator(
-        onRefresh: widget.onRefreshRequested,
+        onRefresh: _refreshScreenData,
         color: AppColors.primaryColor,
         child: ListView(
           padding: const EdgeInsets.fromLTRB(18, 8, 18, 24),
@@ -2250,9 +3064,10 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen> {
               planName: planName,
               status: status,
               upcomingVisit: selectedVisit,
-              daysLeft: daysLeft,
+              visits: visits,
               isExpired: isPlanExpired,
             ),
+            _pendingPaymentWidget(),
             const SizedBox(height: 24),
             Text(
               isPlanExpired ? 'Completed Visits' : 'Upcoming Visit',

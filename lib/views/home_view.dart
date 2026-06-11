@@ -67,35 +67,35 @@ class _HomeViewState extends State<HomeView> {
   static const String _googlePlacesApiKey = 'AIzaSyAijxsBur5n7sI4lhgQu5gAGYzX4cgWflg';
   final List<Map<String, String>> _transformItems = [
     {
-      'image': 'assets/images/work/work1.jpg',
+      'image': 'assets/images/work/work1.webp',
       'caption': 'Healthy indoor plants, maintained the right way',
     },
     {
-      'image': 'assets/images/work/work2.jpg',
+      'image': 'assets/images/work/work2.webp',
       'caption': 'Expert pruning for neat, well-shaped plants',
     },
     {
-      'image': 'assets/images/work/work3.jpg',
+      'image': 'assets/images/work/work3.webp',
       'caption': 'Fresh lawn setup for a greener outdoor space',
     },
     {
-      'image': 'assets/images/work/work4.jpg',
+      'image': 'assets/images/work/work4.webp',
       'caption': 'Plant protection treatments prepared by trained experts',
     },
     {
-      'image': 'assets/images/work/work5.jpg',
+      'image': 'assets/images/work/work5.webp',
       'caption': 'Complete garden care, from soil to setup',
     },
     {
-      'image': 'assets/images/work/work6.jpg',
+      'image': 'assets/images/work/work6.webp',
       'caption': 'Plant propagation done by trained experts',
     },
     {
-      'image': 'assets/images/work/work7.jpg',
+      'image': 'assets/images/work/work7.webp',
       'caption': 'Regular trimming to keep plants neat and healthy',
     },
     {
-      'image': 'assets/images/work/work8.jpg',
+      'image': 'assets/images/work/work8.webp',
       'caption': 'Professional care for every plant, every visit',
     },
   ];
@@ -597,13 +597,15 @@ class _HomeViewState extends State<HomeView> {
       final visitStatus = (booking['status'] ?? '').toString().trim();
       final normalizedVisitStatus = visitStatus.toLowerCase();
 
-      final isDone = normalizedVisitStatus == 'done' ||
+      final isDoneByStatus = normalizedVisitStatus == 'done' ||
           normalizedVisitStatus == 'completed' ||
           normalizedVisitStatus == 'complete' ||
           normalizedVisitStatus == 'closed' ||
           normalizedVisitStatus == 'finished' ||
           normalizedVisitStatus == 'visit completed' ||
           normalizedVisitStatus == 'service completed';
+
+      final isDone = isDoneByStatus || isPast;
 
       debugPrint(
         'VISIT STATUS FROM DDB => date=$date, '
@@ -655,7 +657,11 @@ class _HomeViewState extends State<HomeView> {
     });
 
     final merged = Map<String, dynamic>.from(nearestUpcomingBooking);
-
+    merged['currentCycleDealID'] = nearestUpcomingBooking['dealID'] ?? '';
+    merged['currentCycleStartDate'] =
+        nearestUpcomingBooking['Current_Cycle_Subscription_Start_Date'] ??
+            nearestUpcomingBooking['currentCycleStartDate'] ??
+            '';
     final nearestDate = _extractBookingDateString(nearestUpcomingBooking);
     final nearestTime = (nearestUpcomingBooking['visitTimeSlot1'] ??
         nearestUpcomingBooking['timeSlot'] ??
@@ -912,61 +918,270 @@ class _HomeViewState extends State<HomeView> {
         return;
       }
 
-      final expertVisitData =
-      await BookingService.fetchExpertVisits(resolvedUserId);
-
       debugPrint('================ HOME DEBUG START ================');
       debugPrint('resolvedUserId: $resolvedUserId');
+
+      // Expert visits are only for expert visit flow.
+      // Subscription should not depend on expert visits.
+      List<dynamic> expertVisitData = [];
+
+      try {
+        expertVisitData = await BookingService.fetchExpertVisits(resolvedUserId);
+      } catch (e) {
+        debugPrint('⚠️ Expert visit fetch failed, continuing: $e');
+        expertVisitData = [];
+      }
+
       debugPrint('expertVisitData count: ${expertVisitData.length}');
       debugPrint('expertVisitData full: $expertVisitData');
 
-      final expertSubscriptionMarker =
-      _pickActiveSubscriptionBooking(expertVisitData);
-
       final pendingExpertVisit = _pickPendingExpertVisit(expertVisitData);
 
-      debugPrint('expertSubscriptionMarker: $expertSubscriptionMarker');
       debugPrint('pendingExpertVisit: $pendingExpertVisit');
 
       Map<String, dynamic>? activeBooking;
 
-      if (expertSubscriptionMarker != null) {
-        final zohoBookings =
-        await BookingService.fetchZohoBookings(resolvedUserId);
+      // IMPORTANT:
+      // If Zoho subscription booking is not found, do not stop Home screen.
+      // Expert visit / recommendation card should still show.
+      List<dynamic> zohoBookings = [];
 
-        debugPrint('zohoBookings count: ${zohoBookings.length}');
-        debugPrint('zohoBookings full: $zohoBookings');
+      try {
+        zohoBookings = await BookingService.fetchZohoBookings(resolvedUserId);
+      } catch (e) {
+        final errorText = e.toString().toLowerCase();
 
-        final activeZohoBookings = zohoBookings.where((booking) {
-          final dealStatus =
-          (booking['dealStatus'] ?? '').toString().trim().toLowerCase();
+        final isNoBookingError =
+            errorText.contains('404') ||
+                errorText.contains('no bookings found') ||
+                errorText.contains('no bookings founnd') ||
+                errorText.contains('totalbookings') ||
+                errorText.contains('"bookings": []') ||
+                errorText.contains('bookings: []');
 
-          final subscriptionStatus = (booking['subscriptionStatus'] ?? '')
-              .toString()
-              .trim()
-              .toLowerCase();
-
-          final isStatusActive =
-              dealStatus == 'active' || subscriptionStatus == 'active';
-
+        if (isNoBookingError) {
           debugPrint(
-            'Checking zoho booking => dueDate=${booking['dueDate']}, '
-                'date=${booking['date']}, bookedDates=${booking['bookedDates']}, '
-                'dealStatus=$dealStatus, subscriptionStatus=$subscriptionStatus, '
-                'isStatusActive=$isStatusActive',
+            'ℹ️ No Zoho subscription bookings found. Continuing with expert visit/recommendation flow.',
           );
+          zohoBookings = [];
+        } else {
+          rethrow;
+        }
+      }
 
-          return isStatusActive;
+      debugPrint('zohoBookings count: ${zohoBookings.length}');
+      debugPrint('zohoBookings full: $zohoBookings');
+
+      final mappedZohoBookings = zohoBookings
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+
+      final now = DateTime.now();
+      final todayOnly = DateTime(now.year, now.month, now.day);
+
+      bool isCancelledBooking(Map<String, dynamic> booking) {
+        final dealStatus =
+        (booking['dealStatus'] ?? '').toString().trim().toLowerCase();
+
+        final subscriptionStatus =
+        (booking['subscriptionStatus'] ?? '').toString().trim().toLowerCase();
+
+        final status =
+        (booking['status'] ?? '').toString().trim().toLowerCase();
+
+        return dealStatus == 'cancelled' ||
+            dealStatus == 'canceled' ||
+            subscriptionStatus == 'cancelled' ||
+            subscriptionStatus == 'canceled' ||
+            status == 'cancelled' ||
+            status == 'canceled' ||
+            status == 'inactive' ||
+            status == 'plan cancelled' ||
+            status == 'cancelled plan';
+      }
+
+      bool hasPendingRenewal(Map<String, dynamic> booking) {
+        final renewalPaymentPending =
+        (booking['renewalPaymentPending'] ?? '')
+            .toString()
+            .trim()
+            .toLowerCase();
+
+        return renewalPaymentPending == 'true' ||
+            renewalPaymentPending == 'yes' ||
+            renewalPaymentPending == '1' ||
+            renewalPaymentPending == 'pending';
+      }
+
+      bool isActiveStatus(Map<String, dynamic> booking) {
+        final dealStatus =
+        (booking['dealStatus'] ?? '').toString().trim().toLowerCase();
+
+        final subscriptionStatus =
+        (booking['subscriptionStatus'] ?? '').toString().trim().toLowerCase();
+
+        final status =
+        (booking['status'] ?? '').toString().trim().toLowerCase();
+
+        return dealStatus == 'active' ||
+            subscriptionStatus == 'active' ||
+            subscriptionStatus == 'subscription booked' ||
+            status == 'active' ||
+            status == 'subscription booked' ||
+            status == 'completed' ||
+            status.isEmpty;
+      }
+
+      DateTime? getDueDate(Map<String, dynamic> booking) {
+        final dueDateStr =
+        (booking['dueDate'] ?? booking['date'] ?? '').toString().trim();
+
+        if (dueDateStr.isEmpty) return null;
+
+        return _parseBookedDate(dueDateStr);
+      }
+
+      String getCycleStart(Map<String, dynamic> booking) {
+        return (booking['Current_Cycle_Subscription_Start_Date'] ??
+            booking['currentCycleStartDate'] ??
+            booking['cycleStartDate'] ??
+            '')
+            .toString()
+            .trim();
+      }
+
+      // Step 1:
+      // Find the row that identifies the CURRENT CYCLE.
+      // Current cycle = deal/cycle having nearest today/future active visit.
+      final futureActiveRows = mappedZohoBookings.where((booking) {
+        if (isCancelledBooking(booking)) return false;
+
+        final dueDate = getDueDate(booking);
+
+        final isTodayOrFutureVisit = dueDate != null &&
+            !DateTime(dueDate.year, dueDate.month, dueDate.day)
+                .isBefore(todayOnly);
+
+        final include = isActiveStatus(booking) && isTodayOrFutureVisit;
+
+        debugPrint(
+          'Future marker check => dueDate=${booking['dueDate']}, '
+              'dealID=${booking['dealID']}, '
+              'cycleStart=${getCycleStart(booking)}, '
+              'dealStatus=${booking['dealStatus']}, '
+              'subscriptionStatus=${booking['subscriptionStatus']}, '
+              'status=${booking['status']}, '
+              'isTodayOrFutureVisit=$isTodayOrFutureVisit, '
+              'include=$include',
+        );
+
+        return include;
+      }).toList();
+
+      futureActiveRows.sort((a, b) {
+        final aDate = getDueDate(a);
+        final bDate = getDueDate(b);
+
+        if (aDate == null && bDate == null) return 0;
+        if (aDate == null) return 1;
+        if (bDate == null) return -1;
+
+        return aDate.compareTo(bDate);
+      });
+
+      Map<String, dynamic>? currentCycleMarker;
+
+      if (futureActiveRows.isNotEmpty) {
+        currentCycleMarker = futureActiveRows.first;
+      } else {
+        // Fallback only for renewal-pending subscriptions.
+        // This prevents old expired cycles from being shown as active.
+        final renewalRows = mappedZohoBookings.where((booking) {
+          if (isCancelledBooking(booking)) return false;
+          return hasPendingRenewal(booking);
         }).toList();
 
-        debugPrint('activeZohoBookings count: ${activeZohoBookings.length}');
-        debugPrint('activeZohoBookings full: $activeZohoBookings');
+        renewalRows.sort((a, b) {
+          final aDate = getDueDate(a);
+          final bDate = getDueDate(b);
 
-        if (activeZohoBookings.isNotEmpty) {
-          activeBooking = _mergeZohoBookingsIntoSubscription(activeZohoBookings);
-        } else {
-          activeBooking = null;
+          if (aDate == null && bDate == null) return 0;
+          if (aDate == null) return 1;
+          if (bDate == null) return -1;
+
+          return bDate.compareTo(aDate);
+        });
+
+        if (renewalRows.isNotEmpty) {
+          currentCycleMarker = renewalRows.first;
         }
+      }
+
+      debugPrint('currentCycleMarker: $currentCycleMarker');
+
+      List<Map<String, dynamic>> activeZohoBookings = [];
+
+      if (currentCycleMarker != null) {
+        final currentDealId =
+        (currentCycleMarker['dealID'] ?? '').toString().trim();
+
+        final currentCycleStart = getCycleStart(currentCycleMarker);
+
+        debugPrint('Current cycle dealID: $currentDealId');
+        debugPrint('Current cycle start: $currentCycleStart');
+
+        // Step 2:
+        // Once current cycle is identified, include ALL visits of that cycle,
+        // including past/completed visits.
+        activeZohoBookings = mappedZohoBookings.where((booking) {
+          if (isCancelledBooking(booking)) return false;
+
+          final dealId = (booking['dealID'] ?? '').toString().trim();
+          final cycleStart = getCycleStart(booking);
+
+          if (currentDealId.isNotEmpty) {
+            return dealId == currentDealId;
+          }
+
+          if (currentCycleStart.isNotEmpty) {
+            return cycleStart == currentCycleStart;
+          }
+
+          return false;
+        }).toList();
+
+        activeZohoBookings.sort((a, b) {
+          final aDate = getDueDate(a);
+          final bDate = getDueDate(b);
+
+          if (aDate == null && bDate == null) return 0;
+          if (aDate == null) return 1;
+          if (bDate == null) return -1;
+
+          return aDate.compareTo(bDate);
+        });
+      }
+
+      debugPrint(
+        'activeZohoBookings/current cycle count: ${activeZohoBookings.length}',
+      );
+      debugPrint(
+        'activeZohoBookings/current cycle full: $activeZohoBookings',
+      );
+
+      if (activeZohoBookings.isNotEmpty) {
+        activeBooking = _mergeZohoBookingsIntoSubscription(activeZohoBookings);
+
+        if (currentCycleMarker != null) {
+          activeBooking?['currentCycleDealID'] =
+              (currentCycleMarker['dealID'] ?? '').toString().trim();
+
+          activeBooking?['currentCycleStartDate'] =
+              getCycleStart(currentCycleMarker);
+        }
+      } else {
+        activeBooking = null;
       }
 
       debugPrint('FINAL activeBooking selected: $activeBooking');
@@ -1001,6 +1216,7 @@ class _HomeViewState extends State<HomeView> {
       });
     }
   }
+
 
   String _getNextFutureBookedDate(Map<String, dynamic> booking) {
     final rawDates = booking['bookedDates'];
@@ -2492,7 +2708,7 @@ class _HomeViewState extends State<HomeView> {
           children: [
             Positioned.fill(
               child: Image.asset(
-                'assets/images/home/hero_garden_bg.png',
+                'assets/images/home/hero_garden_bg.webp',
                 fit: BoxFit.cover,
                 alignment: Alignment.centerRight,
                 gaplessPlayback: true,
@@ -3315,35 +3531,35 @@ class _HomeViewState extends State<HomeView> {
     final items = [
       {
         'title': 'Cutting & Pruning',
-        'image': 'assets/images/services/golddust-cutting-pruning.png',
+        'image': 'assets/images/services/golddust-cutting-pruning.webp',
       },
       {
         'title': 'Cleaning the Place',
-        'image': 'assets/images/services/golddust-cleaning-balcony.png',
+        'image': 'assets/images/services/golddust-cleaning-balcony.webp',
       },
       {
         'title': 'Soil Loosening & Weeding',
-        'image': 'assets/images/services/golddust-soil-weeding.png',
+        'image': 'assets/images/services/golddust-soil-weeding.webp',
       },
       {
         'title': 'Dry Leaf Removal',
-        'image': 'assets/images/services/golddust-deadheading.png',
+        'image': 'assets/images/services/golddust-deadheading.webp',
       },
       {
         'title': 'Plant Nourishment',
-        'image': 'assets/images/services/golddust-fertilisation.png',
+        'image': 'assets/images/services/golddust-fertilisation.webp',
       },
       {
         'title': 'Watering',
-        'image': 'assets/images/services/golddust-watering.png',
+        'image': 'assets/images/services/golddust-watering.webp',
       },
       {
         'title': 'Pest Management',
-        'image': 'assets/images/services/golddust-pest-management.png',
+        'image': 'assets/images/services/golddust-pest-management.webp',
       },
       {
         'title': 'Leaf Cleaning',
-        'image': 'assets/images/services/golddust-leaf-cleaning.png',
+        'image': 'assets/images/services/golddust-leaf-cleaning.webp',
       },
     ];
 

@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-
+import 'package:flutter/foundation.dart';
 class BookingService {
   BookingService._();
 
@@ -476,11 +476,35 @@ class BookingService {
         'userID': userId,
       });
 
+      debugPrint('Expert recommendation raw response: $data');
+
       if (data is List) {
         return data;
       }
 
-      throw Exception('Invalid recommendations response format');
+      if (data is Map<String, dynamic>) {
+        if (data['recommendations'] is List) {
+          return data['recommendations'] as List;
+        }
+
+        if (data['items'] is List) {
+          return data['items'] as List;
+        }
+
+        if (data['data'] is List) {
+          return data['data'] as List;
+        }
+
+        if (data['recommendation'] is Map) {
+          return [data['recommendation']];
+        }
+
+        if (data['item'] is Map) {
+          return [data['item']];
+        }
+      }
+
+      throw Exception('Invalid recommendations response format: $data');
     } catch (e) {
       throw Exception('Error fetching expert recommendations: $e');
     }

@@ -55,7 +55,7 @@ class _AddProductsForNextVisitScreenState
 
   bool _isLoading = true;
   String? _errorMessage;
-
+  bool _showSubcategories = false;
   Timer? _timer;
   DateTime _now = DateTime.now();
 
@@ -273,8 +273,15 @@ class _AddProductsForNextVisitScreenState
 
   void _applyCategoryFilter(String category) {
     setState(() {
-      _selectedCategory = category;
-      _setupSubcategories(category);
+      if (_selectedCategory == category) {
+        _showSubcategories = !_showSubcategories;
+      } else {
+        _selectedCategory = category;
+        _setupSubcategories(category);
+        _showSubcategories = true;
+      }
+
+      _selectedSubcategory = 'All';
       _applyFilters();
     });
   }
@@ -560,12 +567,12 @@ class _AddProductsForNextVisitScreenState
   }
 
   Widget _sortByPriceButton() {
-    String label = 'Sort Price';
+    String label = 'Sort';
 
     if (_priceSortMode == PriceSortMode.lowToHigh) {
-      label = 'Price: Low';
+      label = 'Low';
     } else if (_priceSortMode == PriceSortMode.highToLow) {
-      label = 'Price: High';
+      label = 'High';
     }
 
     return GestureDetector(
@@ -582,40 +589,30 @@ class _AddProductsForNextVisitScreenState
           _applyFilters();
         });
       },
-      child: Container(
-        height: 42,
-        padding: const EdgeInsets.symmetric(horizontal: 14),
-        decoration: BoxDecoration(
-          color: _priceSortMode == PriceSortMode.none
-              ? Colors.grey.withValues(alpha: 0.10)
-              : _gold.withValues(alpha: 0.18),
-          borderRadius: BorderRadius.circular(22),
-          border: Border.all(
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            _priceSortMode == PriceSortMode.highToLow
+                ? Icons.arrow_downward_rounded
+                : Icons.arrow_upward_rounded,
+            size: 15,
             color: _priceSortMode == PriceSortMode.none
-                ? AppColors.primaryColor.withValues(alpha: 0.08)
+                ? AppColors.textSecondary
                 : _gold,
           ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              _priceSortMode == PriceSortMode.highToLow
-                  ? Icons.arrow_downward_rounded
-                  : Icons.arrow_upward_rounded,
-              size: 16,
-              color: _priceSortMode == PriceSortMode.none ? _darkGreen : _gold,
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: AppTextStyles.caption.copyWith(
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              color: _priceSortMode == PriceSortMode.none
+                  ? AppColors.textSecondary
+                  : _gold,
             ),
-            const SizedBox(width: 6),
-            Text(
-              label,
-              style: AppTextStyles.caption.copyWith(
-                fontWeight: FontWeight.w900,
-                color: _priceSortMode == PriceSortMode.none ? _darkGreen : _gold,
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -803,31 +800,25 @@ class _AddProductsForNextVisitScreenState
     if (_categories.isEmpty) return const SizedBox.shrink();
 
     return SizedBox(
-      height: 50,
+      height: 38,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         itemCount: _categories.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
         itemBuilder: (_, index) {
           final category = _categories[index];
           final selected = _selectedCategory == category;
 
           return GestureDetector(
-            onTap: () {
-              setState(() {
-                _selectedCategory = category;
-                _setupSubcategories(category);
-                _applyFilters();
-              });
-            },
+            onTap: () => _applyCategoryFilter(category),
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 18),
-              constraints: const BoxConstraints(minWidth: 86),
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              constraints: const BoxConstraints(minWidth: 64),
               decoration: BoxDecoration(
                 color: selected
                     ? _gold.withValues(alpha: 0.22)
-                    : Colors.grey.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(24),
+                    : Colors.grey.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(19),
                 border: Border.all(
                   color: selected
                       ? _gold
@@ -840,7 +831,8 @@ class _AddProductsForNextVisitScreenState
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: AppTextStyles.caption.copyWith(
-                  fontWeight: FontWeight.w900,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
                   color: selected ? _gold : _darkGreen,
                 ),
               ),
@@ -852,14 +844,16 @@ class _AddProductsForNextVisitScreenState
   }
 
   Widget _subcategoryBar() {
-    if (_subcategories.isEmpty) return const SizedBox.shrink();
+    if (!_showSubcategories || _subcategories.isEmpty) {
+      return const SizedBox.shrink();
+    }
 
     return SizedBox(
-      height: 46,
+      height: 34,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         itemCount: _subcategories.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
         itemBuilder: (_, index) {
           final subcategory = _subcategories[index];
           final selected = _selectedSubcategory == subcategory;
@@ -872,17 +866,17 @@ class _AddProductsForNextVisitScreenState
               });
             },
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              constraints: const BoxConstraints(minWidth: 72),
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              constraints: const BoxConstraints(minWidth: 54),
               decoration: BoxDecoration(
                 color: selected
-                    ? _gold.withValues(alpha: 0.18)
-                    : Colors.grey.withValues(alpha: 0.10),
-                borderRadius: BorderRadius.circular(22),
+                    ? _gold.withValues(alpha: 0.16)
+                    : Colors.grey.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(17),
                 border: Border.all(
                   color: selected
                       ? _gold
-                      : AppColors.primaryColor.withValues(alpha: 0.07),
+                      : AppColors.primaryColor.withValues(alpha: 0.06),
                 ),
               ),
               alignment: Alignment.center,
@@ -891,7 +885,8 @@ class _AddProductsForNextVisitScreenState
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: AppTextStyles.caption.copyWith(
-                  fontWeight: FontWeight.w800,
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w700,
                   color: selected ? _gold : _darkGreen,
                 ),
               ),
@@ -988,12 +983,42 @@ class _AddProductsForNextVisitScreenState
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
+        toolbarHeight: 64,
         foregroundColor: AppColors.textPrimary,
-        title: Text(
-          'Add Products',
-          style: AppTextStyles.cardTitle.copyWith(
-            color: AppColors.textPrimary,
-          ),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Enhance Your Next Visit',
+              style: AppTextStyles.cardTitle.copyWith(
+                color: AppColors.textPrimary,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.timer_outlined,
+                  size: 12,
+                  color: AppColors.textSecondary,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  _getProductOrderingCountdown(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppTextStyles.caption.copyWith(
+                    fontSize: 10.5,
+                    color: AppColors.textSecondary,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ],
         ),
         actions: [
           _cartButton(cartCount),
@@ -1002,21 +1027,22 @@ class _AddProductsForNextVisitScreenState
       body: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(18, 4, 18, 8),
+            padding: const EdgeInsets.fromLTRB(18, 0, 18, 8),
             child: Column(
               children: [
-                _enhanceHeader(),
-                const SizedBox(height: 16),
-                _searchBar(),
-                const SizedBox(height: 14),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: _sortByPriceButton(),
+                Row(
+                  children: [
+                    Expanded(child: _searchBar()),
+                    const SizedBox(width: 12),
+                    _sortByPriceButton(),
+                  ],
                 ),
-                const SizedBox(height: 12),
-                _categoryBar(),
                 const SizedBox(height: 10),
-                _subcategoryBar(),
+                _categoryBar(),
+                if (_showSubcategories && _subcategories.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  _subcategoryBar(),
+                ],
               ],
             ),
           ),

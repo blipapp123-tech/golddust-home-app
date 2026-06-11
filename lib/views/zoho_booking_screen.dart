@@ -384,44 +384,59 @@ class _ZohoBookingScreenState extends State<ZohoBookingScreen> {
     if (response.containsKey('bookings') && response['bookings'] is List) {
       final bookingsList = response['bookings'] as List;
 
-      for (final booking in bookingsList) {
-        if (booking.containsKey('visitDay1') &&
-            booking.containsKey('visitTimeSlot1')) {
-          transformedBookings.add({
-            'bookingID': booking['taskID'] ?? '',
-            'Mobile': booking['Mobile'] ?? booking['mobile'] ?? '',
-            'bookingType': 'monthlySubscription',
-            'planName': booking['planName'] ?? 'Standard Plan',
-            'bookingAmount': int.tryParse(booking['monthlyAmount'] ?? '0') ?? 0,
-            'maaliNo': booking['assignedMaliId'] ?? '',
-            'assignedMali': booking['assignedMali'] ?? '',
-            'subscriptionStatus': booking['subscriptionStatus'] ?? 'Active',
-            'startDate': booking['startDate'] ?? '',
-            'dayTimeSlots': [
-              {
-                'day': booking['visitDay1'] ?? '',
-                'timeSlot': booking['visitTimeSlot1'] ?? '',
-              }
-            ],
-            'bookedDates': _generateBookedDatesFromDueDates(booking),
-            'dueDate': booking['dueDate'] ?? '',
-            'dealStatus': booking['dealStatus'] ?? '',
-            'renewalPaymentPending': booking['renewalPaymentPending'] ?? '',
-          });
-        } else {
-          transformedBookings.add({
-            'bookingID': booking['taskID'] ?? '',
-            'bookingType': 'oneTime',
-            'planName': booking['planName'] ?? 'One Time Service',
-            'bookingAmount': int.tryParse(booking['monthlyAmount'] ?? '0') ?? 0,
-            'maaliNo': booking['assignedMaliId'] ?? '',
-            'assignedMali': booking['assignedMali'] ?? '',
-            'date': booking['dueDate'] ?? '',
-            'timeSlot': booking['visitTimeSlot1'] ?? '',
-            'dealStatus': booking['dealStatus'] ?? '',
-            'renewalPaymentPending': booking['renewalPaymentPending'] ?? '',
-          });
-        }
+      for (final raw in bookingsList) {
+        if (raw is! Map) continue;
+
+        final booking = Map<String, dynamic>.from(raw);
+
+        final dueDate = (booking['dueDate'] ?? '').toString().trim();
+        final visitTimeSlot =
+        (booking['visitTimeSlot1'] ?? booking['timeSlot'] ?? '').toString();
+
+        final status = (booking['status'] ?? '').toString().trim();
+        final normalizedStatus = status.toLowerCase();
+
+        final isDone = normalizedStatus == 'done' ||
+            normalizedStatus == 'completed' ||
+            normalizedStatus == 'complete' ||
+            normalizedStatus == 'closed' ||
+            normalizedStatus == 'finished' ||
+            normalizedStatus == 'visit completed' ||
+            normalizedStatus == 'service completed';
+
+        transformedBookings.add({
+          ...booking,
+
+          'bookingID': booking['taskID'] ??
+              booking['bookingID'] ??
+              booking['visitID'] ??
+              '',
+          'taskID': booking['taskID'] ?? '',
+          'dealID': booking['dealID'] ?? '',
+          'bookingType': 'monthlySubscription',
+          'planName': booking['planName'] ?? 'Standard Plan',
+          'bookingAmount':
+          int.tryParse((booking['monthlyAmount'] ?? '0').toString()) ?? 0,
+          'maaliNo': booking['assignedMaliId'] ?? booking['maaliNo'] ?? '',
+          'assignedMali': booking['assignedMali'] ?? '',
+          'subscriptionStatus': booking['subscriptionStatus'] ?? 'Active',
+          'startDate': booking['startDate'] ?? '',
+          'dueDate': dueDate,
+          'date': dueDate,
+          'timeSlot': visitTimeSlot,
+          'visitTimeSlot1': visitTimeSlot,
+          'status': status,
+          'isDone': isDone,
+          'dealStatus': booking['dealStatus'] ?? '',
+          'renewalPaymentPending': booking['renewalPaymentPending'] ?? '',
+          'bookedDates': dueDate.isNotEmpty ? [dueDate] : <String>[],
+          'dayTimeSlots': [
+            {
+              'day': booking['visitDay1'] ?? '',
+              'timeSlot': visitTimeSlot,
+            }
+          ],
+        });
       }
     }
 
@@ -999,12 +1014,168 @@ class _ZohoBookingScreenState extends State<ZohoBookingScreen> {
     }
   }
 
+  Map<String, dynamic> _buildSubscriptionDetailsBookingFromZohoRows() {
+    final sortedBookings = List<Map<String, dynamic>>.from(_bookings);
+
+    sortedBookings.sort((a, b) {
+      final aDate = _parseBookingDate((a['dueDate'] ?? a['date'] ?? '').toString());
+      final bDate = _parseBookingDate((b['dueDate'] ?? b['date'] ?? '').toString());
+
+      if (aDate == null && bDate == null) return 0;
+      if (aDate == null) return 1;
+      if (bDate == null) return -1;
+
+      return aDate.compareTo(bDate);
+    });
+
+    final today = DateTime.now();
+    final todayOnly = DateTime(today.year, today.month, today.day);
+
+    Map<String, dynamic>? nearestUpcomingBooking;
+
+    for (final booking in sortedBookings) {
+      final dateStr = (booking['dueDate'] ?? booking['date'] ?? '').toString();
+      final parsed = _parseBookingDate(dateStr);
+      if (parsed == null) continue;
+
+      final dateOnly = DateTime(parsed.year, parsed.month, parsed.day);
+
+      if (!dateOnly.isBefore(todayOnly)) {
+        nearestUpcomingBooking = booking;
+        break;
+      }
+    }
+
+    nearestUpcomingBooking ??=
+    sortedBookings.isNotEmpty ? sortedBookings.last : <String, dynamic>{};
+
+    final allBookedDates = <String>[];
+    final allScheduledVisits = <Map<String, dynamic>>[];
+
+    for (final booking in sortedBookings) {
+      final date = (booking['dueDate'] ?? booking['date'] ?? '').toString().trim();
+      if (date.isEmpty) continue;
+
+      final parsed = _parseBookingDate(date);
+      if (parsed == null) continue;
+
+      final dateOnly = DateTime(parsed.year, parsed.month, parsed.day);
+
+      final status = (booking['status'] ?? '').toString().trim();
+      final normalizedStatus = status.toLowerCase();
+
+      final isDone = normalizedStatus == 'done' ||
+          normalizedStatus == 'completed' ||
+          normalizedStatus == 'complete' ||
+          normalizedStatus == 'closed' ||
+          normalizedStatus == 'finished' ||
+          normalizedStatus == 'visit completed' ||
+          normalizedStatus == 'service completed';
+
+      if (!allBookedDates.contains(date)) {
+        allBookedDates.add(date);
+      }
+
+      allScheduledVisits.add({
+        'date': date,
+        'dueDate': date,
+        'mali': booking['assignedMali'] ?? booking['maaliName'] ?? 'Not assigned',
+        'assignedMali': booking['assignedMali'] ?? booking['maaliName'] ?? 'Not assigned',
+        'assignedMaliId': booking['assignedMaliId'] ?? booking['maaliNo'] ?? '',
+        'maaliNo': booking['assignedMaliId'] ?? booking['maaliNo'] ?? '',
+        'timeSlot': booking['visitTimeSlot1'] ?? booking['timeSlot'] ?? 'N/A',
+        'bookingID': booking['bookingID'] ?? '',
+        'taskID': booking['taskID'] ?? '',
+        'dealID': booking['dealID'] ?? '',
+        'planName': booking['planName'] ?? '',
+        'status': status,
+        'visitStatus': status,
+        'isDone': isDone,
+        'booking': Map<String, dynamic>.from(booking),
+        'isPast': dateOnly.isBefore(todayOnly),
+        'isToday': dateOnly.isAtSameMomentAs(todayOnly),
+        'isFuture': dateOnly.isAfter(todayOnly),
+      });
+    }
+
+    allBookedDates.sort((a, b) {
+      final aDate = _parseBookingDate(a) ?? DateTime(2100);
+      final bDate = _parseBookingDate(b) ?? DateTime(2100);
+      return aDate.compareTo(bDate);
+    });
+
+    allScheduledVisits.sort((a, b) {
+      final aDate = _parseBookingDate(a['date'].toString()) ?? DateTime(2100);
+      final bDate = _parseBookingDate(b['date'].toString()) ?? DateTime(2100);
+      return aDate.compareTo(bDate);
+    });
+
+    final merged = Map<String, dynamic>.from(nearestUpcomingBooking);
+
+    merged['bookingType'] = 'monthlySubscription';
+    merged['bookedDates'] = allBookedDates;
+    merged['allScheduledVisits'] = allScheduledVisits;
+    merged['rawZohoBookings'] = sortedBookings;
+
+    merged['dueDate'] =
+        (nearestUpcomingBooking['dueDate'] ?? nearestUpcomingBooking['date'] ?? '')
+            .toString();
+
+    merged['date'] = merged['dueDate'];
+
+    merged['visitTimeSlot1'] =
+        (nearestUpcomingBooking['visitTimeSlot1'] ??
+            nearestUpcomingBooking['timeSlot'] ??
+            '')
+            .toString();
+
+    merged['timeSlot'] = merged['visitTimeSlot1'];
+
+    merged['planName'] = nearestUpcomingBooking['planName'] ?? 'Current Plan';
+    merged['assignedMali'] =
+        nearestUpcomingBooking['assignedMali'] ?? 'Not assigned';
+    merged['maaliNo'] =
+        nearestUpcomingBooking['assignedMaliId'] ??
+            nearestUpcomingBooking['maaliNo'] ??
+            '';
+    merged['subscriptionStatus'] =
+        nearestUpcomingBooking['subscriptionStatus'] ?? 'Active';
+    merged['dealStatus'] = nearestUpcomingBooking['dealStatus'] ?? 'Active';
+
+    debugPrint('✅ SubscriptionDetails merged booking visits: ${allScheduledVisits.length}');
+    debugPrint('✅ SubscriptionDetails merged booking: $merged');
+
+    return merged;
+  }
+
+  DateTime? _parseBookingDate(String value) {
+    try {
+      final clean = value.trim();
+      if (clean.isEmpty) return null;
+
+      final parts = clean.split('-');
+      if (parts.length != 3) return null;
+
+      final day = int.parse(parts[0]);
+      final month = int.parse(parts[1]);
+      final rawYear = int.parse(parts[2]);
+      final year = parts[2].length == 2 ? 2000 + rawYear : rawYear;
+
+      return DateTime(year, month, day);
+    } catch (_) {
+      return null;
+    }
+  }
+
   void _openSubscriptionDetailsScreen() {
     debugPrint('OPEN SUBSCRIPTION DETAILS SCREEN');
 
     if (_bookings.isEmpty) return;
 
-    final booking = _bookings.first;
+    final booking = _buildSubscriptionDetailsBookingFromZohoRows();
+
+    debugPrint('🧾 Passing allScheduledVisits count: '
+        '${booking['allScheduledVisits'] is List ? booking['allScheduledVisits'].length : 0}');
 
     Navigator.push(
       context,

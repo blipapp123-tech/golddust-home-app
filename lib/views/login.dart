@@ -61,35 +61,35 @@ class _LoginScreenState extends State<LoginScreen> {
   final List<Map<String, String>> _serviceImages = const [
     {
       'title': 'Cutting',
-      'image': 'assets/images/services/golddust-cutting-pruning.png',
+      'image': 'assets/images/services/golddust-cutting-pruning.webp',
     },
     {
       'title': 'Cleaning',
-      'image': 'assets/images/services/golddust-cleaning-balcony.png',
+      'image': 'assets/images/services/golddust-cleaning-balcony.webp',
     },
     {
       'title': 'Soil Care',
-      'image': 'assets/images/services/golddust-soil-weeding.png',
+      'image': 'assets/images/services/golddust-soil-weeding.webp',
     },
     {
       'title': 'Dry Leaf Removal',
-      'image': 'assets/images/services/golddust-deadheading.png',
+      'image': 'assets/images/services/golddust-deadheading.webp',
     },
     {
       'title': 'Plant Nourishment',
-      'image': 'assets/images/services/golddust-fertilisation.png',
+      'image': 'assets/images/services/golddust-fertilisation.webp',
     },
     {
       'title': 'Watering',
-      'image': 'assets/images/services/golddust-watering.png',
+      'image': 'assets/images/services/golddust-watering.webp',
     },
     {
       'title': 'Pest Care',
-      'image': 'assets/images/services/golddust-pest-management.png',
+      'image': 'assets/images/services/golddust-pest-management.webp',
     },
     {
       'title': 'Leaf Cleaning',
-      'image': 'assets/images/services/golddust-leaf-cleaning.png',
+      'image': 'assets/images/services/golddust-leaf-cleaning.webp',
     },
   ];
 

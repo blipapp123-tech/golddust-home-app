@@ -72,7 +72,7 @@ class _SplashViewState extends State<SplashView> {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Image.asset(
-                  'assets/images/logo.png',
+                  'assets/images/logo.webp',
                   width: 132,
                   fit: BoxFit.contain,
                   errorBuilder: (_, __, ___) {

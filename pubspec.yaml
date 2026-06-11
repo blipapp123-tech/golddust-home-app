@@ -2,7 +2,7 @@ name: golddust_home_app
 description: "A new Flutter project."
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 1.0.1+5
 
 environment:
   sdk: ^3.9.2
@@ -46,9 +46,9 @@ dev_dependencies:
 flutter_launcher_icons:
   android: true
   ios: true
-  image_path: "assets/images/logo.png"
+  image_path: "assets/images/logo.webp"
   adaptive_icon_background: "#FFFFFF"
-  adaptive_icon_foreground: "assets/images/logo.png"
+  adaptive_icon_foreground: "assets/images/logo.webp"
   remove_alpha_ios: true
 
 flutter:
@@ -58,9 +58,9 @@ flutter:
     - assets/images/
     - assets/images/services/
     - assets/images/work/
-    - assets/images/home/hero_garden_bg.png
+    - assets/images/home/hero_garden_bg.webp
     - assets/fonts/
-    - assets/images/logo.png
+    - assets/images/logo.webp
     - assets/videos/transform_home_garden.mp4
   fonts:
     - family: Gotham
