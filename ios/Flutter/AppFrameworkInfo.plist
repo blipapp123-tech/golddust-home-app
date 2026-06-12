@@ -19,6 +19,8 @@
   <key>CFBundleSignature</key>
   <string>????</string>
   <key>CFBundleVersion</key>
-  <string>1.0</string>
+  <string>1.0</string>q
+  <key>MinimumOSVersion</key>
+  <string>16.0</string>
 </dict>
 </plist>
