@@ -1,3 +1,7 @@
+import 'dart:io';
+
+import 'package:app_tracking_transparency/app_tracking_transparency.dart';
+
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -16,9 +20,28 @@ class _SplashViewState extends State<SplashView> {
   @override
   void initState() {
     super.initState();
-    _checkLoginAndNavigate();
-  }
 
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await Future.delayed(const Duration(milliseconds: 500));
+      await _requestAttPermissionIfNeeded();
+
+      _checkLoginAndNavigate();
+    });
+  }
+  Future<void> _requestAttPermissionIfNeeded() async {
+    if (!Platform.isIOS) return;
+
+    try {
+      final status = await AppTrackingTransparency.trackingAuthorizationStatus;
+
+      if (status == TrackingStatus.notDetermined) {
+        await Future.delayed(const Duration(milliseconds: 700));
+        await AppTrackingTransparency.requestTrackingAuthorization();
+      }
+    } catch (e) {
+      debugPrint("ATT permission request failed: $e");
+    }
+  }
   Future<void> _checkLoginAndNavigate() async {
     await Future.delayed(const Duration(milliseconds: 1200));
 
