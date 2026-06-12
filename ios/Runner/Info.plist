@@ -5,11 +5,9 @@
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>NSUserTrackingUsageDescription</key>
-    <string>This helps us measure app performance and improve your GoldDust Gardening experience.</string>
+	<string>This helps us measure app performance and improve your GoldDust Gardening experience.</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
-	<key>NSUserTrackingUsageDescription</key>
-    <string>This helps us measure app performance and improve your GoldDust Gardening experience.</string>
 	<key>CFBundleDisplayName</key>
 	<string>Golddust Home App</string>
 	<key>CFBundleExecutable</key>
