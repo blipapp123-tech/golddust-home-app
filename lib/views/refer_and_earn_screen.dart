@@ -16,11 +16,21 @@ class ReferAndEarnScreen extends StatelessWidget {
   static const Color _softBg = Colors.white;
 
   Future<void> _shareInvite() async {
+    const supportLink = 'https://wa.me/919217206273';
+    const appDownloadLink =
+        'https://play.google.com/store/apps/details?id=com.rethinkandrevive1.golddustgardening';
+
     await Share.share(
-      'I’m using Gold Dust Gardening for professional home garden care. '
-          'They are offering referral rewards: I can get 1 free plant on referral, '
-          '1 free visit when the referral converts, and you can get 5 free plants. '
-          'Contact Gold Dust support to claim the referral reward.',
+      'I’m using Gold Dust Gardening for professional home garden care.\n\n'
+          'They are offering referral rewards:\n'
+          '🌿 I get 1 free plant when I refer a customer\n'
+          '🌿 I get 1 free visit when the referral converts\n'
+          '🌿 You get 5 free plants when you join through my referral\n\n'
+          'Download the Gold Dust Gardening app here:\n'
+          '$appDownloadLink\n\n'
+          'Contact Gold Dust support to claim the referral reward:\n'
+          '$supportLink\n\n'
+          'Please mention my name while contacting support.',
     );
   }
 

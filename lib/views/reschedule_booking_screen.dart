@@ -65,6 +65,37 @@ class _RescheduleBookingScreenState extends State<RescheduleBookingScreen> {
     }
   }
 
+  DateTime _dateOnly(DateTime date) {
+    return DateTime(date.year, date.month, date.day);
+  }
+
+  bool _isPreponingVisit(DateTime selectedDate) {
+    final oldVisitDate = _parseOldVisitDate(widget.oldDate);
+    if (oldVisitDate == null) return false;
+
+    return _dateOnly(selectedDate).isBefore(_dateOnly(oldVisitDate));
+  }
+
+  bool _isDateAllowedForReschedule(DateTime selectedDate) {
+    final todayOnly = _dateOnly(DateTime.now());
+    final selectedDateOnly = _dateOnly(selectedDate);
+
+    // Past dates are never allowed.
+    if (selectedDateOnly.isBefore(todayOnly)) {
+      return false;
+    }
+
+    // This rule applies ONLY for preponing.
+    // If customer is moving visit earlier, selected date must be at least 2 days from today.
+    if (_isPreponingVisit(selectedDate)) {
+      final minPreponeDate = todayOnly.add(const Duration(days: 2));
+      return !selectedDateOnly.isBefore(minPreponeDate);
+    }
+
+    // Same day as original visit or future/postponing dates are allowed.
+    return true;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -94,12 +125,11 @@ class _RescheduleBookingScreenState extends State<RescheduleBookingScreen> {
     // Optional but recommended:
     // Do not show dates before today because rescheduling to past dates is not useful.
     _rescheduleDateOptions = allDates.where((date) {
-      final dateOnly = DateTime(date.year, date.month, date.day);
-      return !dateOnly.isBefore(todayOnly);
+      return _isDateAllowedForReschedule(date);
     }).toList();
 
     if (_rescheduleDateOptions.isEmpty) {
-      _rescheduleDateOptions = [todayOnly];
+      _rescheduleDateOptions = [oldVisitDateOnly];
     }
 
     _selectedDate = _rescheduleDateOptions.first;
@@ -476,6 +506,18 @@ class _RescheduleBookingScreenState extends State<RescheduleBookingScreen> {
       return;
     }
 
+    if (!_isDateAllowedForReschedule(_selectedDate!)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'You can prepone a visit only up to 2 days in advance',
+          ),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     setState(() {
       _isSubmitting = true;
       _errorMessage = null;
@@ -504,6 +546,10 @@ class _RescheduleBookingScreenState extends State<RescheduleBookingScreen> {
         "visitDay1": visitDay,
         "isAssignedMaali": isAssignedMaali,
         "autoAssignMaali": !isAssignedMaali,
+
+        // This tells Lambda that request came from customer app/frontend
+        "rescheduleSource": "customer_app",
+        "requestedBy": "user",
       };
 
       if (isAssignedMaali) {
@@ -534,18 +580,52 @@ class _RescheduleBookingScreenState extends State<RescheduleBookingScreen> {
       if (response.statusCode == 200) {
         final responseData = _decodeApiResponse(response.body);
 
+        final success = responseData['success'] == true;
+        final dbUpdated = responseData['dbUpdated'] == true;
+        final crmTaskSynced = responseData['crmTaskSynced'] == true;
+
         if (!mounted) return;
+
+        if (success && dbUpdated && crmTaskSynced) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                "Booking rescheduled successfully! Assigned Maali: ${responseData['assignedMali'] ?? selectedMaaliName}",
+              ),
+              backgroundColor: Colors.green,
+            ),
+          );
+
+          Navigator.pop(context, true);
+          return;
+        }
+
+        if (success && dbUpdated && !crmTaskSynced) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                responseData['message']?.toString() ??
+                    'Booking rescheduled, but CRM sync is pending.',
+              ),
+              backgroundColor: Colors.orange,
+            ),
+          );
+
+          Navigator.pop(context, true);
+          return;
+        }
+
+        setState(() {
+          _errorMessage =
+              responseData['message']?.toString() ?? 'Failed to reschedule booking.';
+        });
 
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              "Booking rescheduled successfully! Assigned Maali: ${responseData['assignedMali'] ?? selectedMaaliName}",
-            ),
-            backgroundColor: Colors.green,
+            content: Text(_errorMessage!),
+            backgroundColor: Colors.red,
           ),
         );
-
-        Navigator.pop(context, true);
       } else {
         if (!mounted) return;
 
