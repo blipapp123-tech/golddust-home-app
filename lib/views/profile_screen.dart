@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
-
+import 'delete_account_screen.dart';
 import '../app/app_constants.dart';
 import '../app/app_text_styles.dart';
 import '../services/booking_service.dart';
@@ -297,11 +297,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  void _requestAccountDeletion() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Please contact support to request account deletion.'),
-        backgroundColor: AppColors.primaryColor,
+  void _openDeleteAccountPage() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DeleteAccountScreen(
+          userId: widget.userId,
+          phoneNumber: _phoneNumber,
+        ),
       ),
     );
   }
@@ -362,8 +365,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     _divider(),
                     _profileRow(
                       icon: Icons.delete_outline_rounded,
-                      title: 'Request account deletion',
-                      onTap: _requestAccountDeletion,
+                      iconColor: Colors.red,
+                      title: 'Delete account',
+                      onTap: _openDeleteAccountPage,
                     ),
                     _divider(),
                     _profileRow(
