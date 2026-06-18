@@ -1,5 +1,5 @@
 import 'dart:async';
-
+import 'privacy_policy_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -8,6 +8,7 @@ import '../app/app_constants.dart';
 import '../app/app_text_styles.dart';
 import '../services/booking_service.dart';
 import '../widgets/liquid_glass_instruction_card.dart';
+import 'terms_of_service_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   final String userId;
@@ -34,11 +35,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   static const Color _gold = Color(0xFFFFB72B);
   static const Color _softBg = Color(0xFFF6F7FC);
 
-  static const String _termsUrl =
-      'https://www.golddustgardening.com/pages/terms-of-service/';
-
-  static const String _privacyUrl =
-      'https://www.golddustgardening.com/pages/privacy-policy/';
 
   static const String _aboutUrl = 'https://www.golddustgardening.com/';
 
@@ -309,6 +305,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  void _openPrivacyPolicyPage() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const PrivacyPolicyScreen(),
+      ),
+    );
+  }
+
+  void _openTermsOfServicePage() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const TermsOfServiceScreen(),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -354,13 +368,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     _profileRow(
                       icon: Icons.description_outlined,
                       title: 'Terms of service',
-                      onTap: () => _openWebPage(_termsUrl),
+                      onTap: _openTermsOfServicePage,
                     ),
                     _divider(),
                     _profileRow(
                       icon: Icons.privacy_tip_outlined,
                       title: 'Privacy policy',
-                      onTap: () => _openWebPage(_privacyUrl),
+                      onTap: _openPrivacyPolicyPage,
                     ),
                     _divider(),
                     _profileRow(

@@ -1,11 +1,13 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../app/app_constants.dart';
 import '../app/app_text_styles.dart';
+import '../services/account_deletion_service.dart';
 import '../widgets/liquid_glass_instruction_card.dart';
 
-class DeleteAccountScreen extends StatelessWidget {
+class DeleteAccountScreen extends StatefulWidget {
   final String userId;
   final String phoneNumber;
 
@@ -15,230 +17,399 @@ class DeleteAccountScreen extends StatelessWidget {
     required this.phoneNumber,
   });
 
+  @override
+  State<DeleteAccountScreen> createState() => _DeleteAccountScreenState();
+}
+
+class _DeleteAccountScreenState extends State<DeleteAccountScreen> {
   static const Color _darkGreen = Color(0xFF063F20);
   static const Color _softBg = Color(0xFFF6F7FC);
+  static const Color _dangerRed = Color(0xFFE53935);
 
-  String _extractPhoneNumber(String raw) {
-    final clean = raw.trim();
+  final TextEditingController _reasonController = TextEditingController();
 
-    if (clean.startsWith('otp')) {
-      return clean.replaceFirst('otp', '');
-    }
+  bool _isSubmitting = false;
 
-    final digitsOnly = clean.replaceAll(RegExp(r'[^0-9]'), '');
-
-    if (digitsOnly.length >= 10) {
-      return digitsOnly.substring(digitsOnly.length - 10);
-    }
-
-    return digitsOnly;
+  @override
+  void dispose() {
+    _reasonController.dispose();
+    super.dispose();
   }
 
-  Future<void> _sendDeleteAccountEmail(BuildContext context) async {
-    final phone = _extractPhoneNumber(phoneNumber);
+  String get _resolvedUserId {
+    final cleanUserId = widget.userId.trim();
 
-    final uri = Uri(
-      scheme: 'mailto',
-      path: 'care@golddustgardening.com',
-      queryParameters: {
-        'subject': 'Account Deletion Request',
-        'body': '''
-Hi Gold Dust Gardening Team,
+    if (cleanUserId.isNotEmpty) return cleanUserId;
 
-I want to request deletion of my Gold Dust Gardening mobile app account.
+    final phone = widget.phoneNumber.trim();
 
-Registered Mobile Number: ${phone.isEmpty ? 'Please enter/verify manually' : phone}
-User ID: $userId
+    if (phone.isNotEmpty) return 'otp$phone';
 
-Please delete my account and associated personal data from your database.
+    return '';
+  }
 
-Thank you.
-''',
-      },
-    );
+  String get _platform {
+    if (Platform.isIOS) return 'ios';
+    if (Platform.isAndroid) return 'android';
+    return 'unknown';
+  }
+
+  Future<void> _submitDeletionRequest() async {
+    final userId = _resolvedUserId;
+
+    if (userId.isEmpty) {
+      _showSnackBar(
+        'Unable to identify your account. Please login again and try.',
+        isError: true,
+      );
+      return;
+    }
+
+    final confirmed = await _showConfirmDialog();
+
+    if (confirmed != true) return;
+
+    setState(() {
+      _isSubmitting = true;
+    });
 
     try {
-      final opened = await launchUrl(
-        uri,
-        mode: LaunchMode.externalApplication,
+      final result = await AccountDeletionService.submitDeletionRequest(
+        userId: userId,
+        phoneNumber: widget.phoneNumber,
+        reason: _reasonController.text.trim(),
+        platform: _platform,
       );
 
-      if (!opened && context.mounted) {
-        _showSnack(context);
-      }
-    } catch (e) {
-      debugPrint('❌ Delete account email open error: $e');
+      if (!mounted) return;
 
-      if (context.mounted) {
-        _showSnack(context);
-      }
+      await _showSuccessDialog(result);
+
+      if (!mounted) return;
+
+      Navigator.pop(context);
+    } catch (e) {
+      debugPrint('❌ Delete account request error: $e');
+
+      if (!mounted) return;
+
+      _showSnackBar(
+        'Unable to submit request right now. Please try again.',
+        isError: true,
+      );
+    } finally {
+      if (!mounted) return;
+
+      setState(() {
+        _isSubmitting = false;
+      });
     }
   }
 
-  void _showSnack(BuildContext context) {
+  Future<bool?> _showConfirmDialog() {
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: !_isSubmitting,
+      builder: (_) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(22),
+          ),
+          title: const Text(
+            'Delete account?',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w900,
+              color: _darkGreen,
+            ),
+          ),
+          content: const Text(
+            'This will submit a request to permanently delete your Gold Dust account and associated personal data that we are not legally required to retain.',
+            style: TextStyle(
+              fontSize: 13.5,
+              height: 1.45,
+              fontWeight: FontWeight.w500,
+              color: AppColors.textSecondary,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text(
+                'Cancel',
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _dangerRed,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+              child: const Text(
+                'Confirm',
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _showSuccessDialog(AccountDeletionResult result) {
+    final message = result.alreadyExists
+        ? 'Your account deletion request has already been submitted. We will process it within 7 days and send you a confirmation once completed.'
+        : 'Your account deletion request has been submitted successfully. We will process it within 7 days and send you a confirmation once completed.';
+
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(22),
+          ),
+          title: const Text(
+            'Request submitted',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w900,
+              color: _darkGreen,
+            ),
+          ),
+          content: Text(
+            message,
+            style: const TextStyle(
+              fontSize: 13.5,
+              height: 1.45,
+              fontWeight: FontWeight.w500,
+              color: AppColors.textSecondary,
+            ),
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primaryColor,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+              child: const Text(
+                'Done',
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showSnackBar(
+      String message, {
+        bool isError = false,
+      }) {
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'Unable to open email app. Please email care@golddustgardening.com directly.',
-        ),
-        backgroundColor: AppColors.primaryColor,
+      SnackBar(
+        content: Text(message),
+        backgroundColor: isError ? _dangerRed : AppColors.primaryColor,
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final phone = _extractPhoneNumber(phoneNumber);
-
     return Scaffold(
       backgroundColor: _softBg,
       body: Column(
         children: [
           _buildHeader(context),
           Expanded(
-            child: SingleChildScrollView(
+            child: ListView(
               padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  LiquidGlassInstructionCard(
-                    radius: 24,
-                    minHeight: 0,
-                    padding: const EdgeInsets.fromLTRB(18, 20, 18, 20),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Delete Account',
-                          style: AppTextStyles.heroTitle.copyWith(
-                            fontSize: 30,
-                            height: 1.05,
-                            color: AppColors.textPrimary,
-                            fontWeight: FontWeight.w900,
-                          ),
+              children: [
+                LiquidGlassInstructionCard(
+                  radius: 24,
+                  minHeight: 0,
+                  padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(
+                        Icons.warning_amber_rounded,
+                        color: _dangerRed,
+                        size: 30,
+                      ),
+                      const SizedBox(height: 14),
+                      Text(
+                        'Request account deletion',
+                        style: AppTextStyles.bodyLarge.copyWith(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w900,
+                          color: AppColors.textPrimary,
                         ),
-                        const SizedBox(height: 10),
-                        Text(
-                          'Last updated: Recently',
-                          style: AppTextStyles.body.copyWith(
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        'You can submit your account deletion request directly from the app. This request will permanently delete your Gold Dust account and associated personal data that we are not legally required to retain.',
+                        style: AppTextStyles.body.copyWith(
+                          fontSize: 13.5,
+                          height: 1.45,
+                          fontWeight: FontWeight.w500,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Text(
+                        'Deletion requests are processed within 7 days. We will send you a confirmation once the deletion is completed.',
+                        style: AppTextStyles.body.copyWith(
+                          fontSize: 13.5,
+                          height: 1.45,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                LiquidGlassInstructionCard(
+                  radius: 24,
+                  minHeight: 0,
+                  padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Account details',
+                        style: AppTextStyles.body.copyWith(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w900,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      _detailRow('User ID', _resolvedUserId),
+                      const SizedBox(height: 8),
+                      _detailRow(
+                        'Phone',
+                        widget.phoneNumber.trim().isEmpty
+                            ? 'Not available'
+                            : '+91 ${widget.phoneNumber.trim()}',
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                LiquidGlassInstructionCard(
+                  radius: 24,
+                  minHeight: 0,
+                  padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Reason',
+                        style: AppTextStyles.body.copyWith(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w900,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Optional',
+                        style: AppTextStyles.caption.copyWith(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _reasonController,
+                        maxLines: 4,
+                        textInputAction: TextInputAction.done,
+                        decoration: InputDecoration(
+                          hintText: 'Tell us why you want to delete your account',
+                          hintStyle: const TextStyle(
                             fontSize: 13,
                             color: AppColors.textSecondary,
-                            fontWeight: FontWeight.w700,
+                          ),
+                          filled: true,
+                          fillColor: Colors.white.withOpacity(0.72),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(18),
+                            borderSide: BorderSide(
+                              color: Colors.black.withOpacity(0.06),
+                            ),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(18),
+                            borderSide: BorderSide(
+                              color: Colors.black.withOpacity(0.06),
+                            ),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(18),
+                            borderSide: const BorderSide(
+                              color: AppColors.primaryColor,
+                              width: 1.2,
+                            ),
                           ),
                         ),
-                      ],
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 22),
+                SizedBox(
+                  height: 54,
+                  child: ElevatedButton(
+                    onPressed: _isSubmitting ? null : _submitDeletionRequest,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _dangerRed,
+                      disabledBackgroundColor: Colors.red.withOpacity(0.35),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(18),
+                      ),
+                    ),
+                    child: _isSubmitting
+                        ? const SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.4,
+                        color: Colors.white,
+                      ),
+                    )
+                        : const Text(
+                      'Submit delete account request',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w900,
+                      ),
                     ),
                   ),
-                  const SizedBox(height: 18),
-                  LiquidGlassInstructionCard(
-                    radius: 24,
-                    minHeight: 0,
-                    padding: const EdgeInsets.fromLTRB(18, 22, 18, 22),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'To delete your account, please submit your phone number associated with your Gold Dust Gardening mobile app account by emailing us at care@golddustgardening.com with your request for account deletion.',
-                          style: AppTextStyles.body.copyWith(
-                            fontSize: 15,
-                            height: 1.6,
-                            color: AppColors.textPrimary,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 18),
-                        Text(
-                          'We will respond promptly. User data including name, phone number, and address will be deleted from our database, except records that we are legally required to retain such as invoices, payments, tax records, or service history required for business compliance.',
-                          style: AppTextStyles.body.copyWith(
-                            fontSize: 15,
-                            height: 1.6,
-                            color: AppColors.textPrimary,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 22),
-
-                        if (phone.isNotEmpty)
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 14,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(18),
-                              border: Border.all(
-                                color: Colors.black.withOpacity(0.06),
-                              ),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(
-                                  Icons.phone_rounded,
-                                  size: 20,
-                                  color: AppColors.primaryColor,
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Text(
-                                    '+91 $phone',
-                                    style: AppTextStyles.body.copyWith(
-                                      fontSize: 14,
-                                      color: AppColors.textPrimary,
-                                      fontWeight: FontWeight.w800,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-
-                        const SizedBox(height: 18),
-
-                        SizedBox(
-                          width: double.infinity,
-                          height: 52,
-                          child: ElevatedButton.icon(
-                            onPressed: () => _sendDeleteAccountEmail(context),
-                            icon: const Icon(
-                              Icons.email_outlined,
-                              size: 20,
-                            ),
-                            label: const Text(
-                              'Email Deletion Request',
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.red,
-                              foregroundColor: Colors.white,
-                              elevation: 0,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(18),
-                              ),
-                            ),
-                          ),
-                        ),
-
-                        const SizedBox(height: 16),
-
-                        Text(
-                          'Email: care@golddustgardening.com',
-                          style: AppTextStyles.body.copyWith(
-                            fontSize: 13,
-                            height: 1.5,
-                            color: AppColors.textSecondary,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ],
@@ -253,7 +424,7 @@ Thank you.
         22,
         MediaQuery.of(context).padding.top + 12,
         22,
-        20,
+        24,
       ),
       decoration: const BoxDecoration(
         color: _darkGreen,
@@ -273,16 +444,47 @@ Thank you.
             ),
           ),
           const SizedBox(width: 8),
-          Text(
-            'Delete Account',
-            style: AppTextStyles.bodyLarge.copyWith(
-              fontSize: 18,
-              color: Colors.white,
-              fontWeight: FontWeight.w800,
+          Expanded(
+            child: Text(
+              'Delete account',
+              style: AppTextStyles.bodyLarge.copyWith(
+                fontSize: 18,
+                color: Colors.white,
+                fontWeight: FontWeight.w800,
+              ),
             ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _detailRow(String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 78,
+          child: Text(
+            label,
+            style: AppTextStyles.caption.copyWith(
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              color: AppColors.textSecondary,
+            ),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: AppTextStyles.body.copyWith(
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              color: AppColors.textPrimary,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

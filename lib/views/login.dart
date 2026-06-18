@@ -7,7 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:sendotp_flutter_sdk/sendotp_flutter_sdk.dart';
-
+import '../services/onesignal_notification_service.dart';
 import '../app/app_constants.dart';
 import '../app/app_text_styles.dart';
 import '../widgets/liquid_glass_instruction_card.dart';
@@ -168,7 +168,10 @@ class _LoginScreenState extends State<LoginScreen> {
       await prefs.setBool('isLoggedIn', true);
 
       await analytics.setUserId(id: googleReviewUserId);
-
+      await OneSignalNotificationService.initialize(
+        userId: googleReviewUserId,
+        userName: googleReviewUserName,
+      );
       if (!mounted) return;
 
       setState(() {
@@ -530,7 +533,10 @@ class _LoginScreenState extends State<LoginScreen> {
       await prefs.setString('userPhone', phoneNumber);
       await prefs.setString('maaliUserId', maaliUserId);
       await prefs.setBool('isLoggedIn', true);
-
+      await OneSignalNotificationService.initialize(
+        userId: maaliUserId,
+        userName: phoneNumber,
+      );
       if (!mounted) return;
       setState(() => isLoading = false);
 
