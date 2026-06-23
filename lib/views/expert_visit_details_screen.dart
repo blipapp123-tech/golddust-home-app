@@ -650,11 +650,27 @@ class _ExpertVisitDetailsScreenState extends State<ExpertVisitDetailsScreen> {
 
       if (!mounted) return;
 
+      debugPrint('🟡 Calling Zoho showCheckout...');
+      debugPrint('🟡 paymentSessionId: $paymentSessionId');
+      debugPrint('🟡 customerPhone: $customerPhone');
+
       final result = await _zohoSdk.showCheckout(
         options,
         domain: ZohoPaymentsDomain.india,
         environment: ZohoPaymentsEnvironment.live,
+      )
+          .timeout(
+        const Duration(seconds: 25),
+        onTimeout: () {
+          throw Exception(
+            'Payment page did not open. Please check internet and try again.',
+          );
+        },
       );
+
+      debugPrint('🟢 Zoho checkout returned');
+      debugPrint('🟢 result runtimeType: ${result.runtimeType}');
+      debugPrint('🟢 result: $result');
 
       if (!mounted) return;
 

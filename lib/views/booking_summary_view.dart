@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:zoho_payments_flutter_sdk/zoho_payments_flutter_sdk.dart';
+
 import '../app/app_constants.dart';
 import '../services/booking_service.dart';
 import 'zoho_booking_screen.dart';
@@ -56,11 +58,13 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
       await _fetchRecommendation();
 
       if (!mounted) return;
+
       setState(() {
         _isLoading = false;
       });
     } catch (e) {
       if (!mounted) return;
+
       setState(() {
         _errorMessage = e.toString();
         _isLoading = false;
@@ -76,14 +80,17 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
       );
 
       if (!mounted) return;
+
       setState(() {
         _isZohoSdkReady = true;
       });
     } catch (e) {
       if (!mounted) return;
+
       setState(() {
         _isZohoSdkReady = false;
       });
+
       rethrow;
     }
   }
@@ -98,6 +105,7 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
     final latest = Map<String, dynamic>.from(data.first as Map);
 
     if (!mounted) return;
+
     setState(() {
       _recommendation = latest;
       _selectedSlotIndices.clear();
@@ -106,15 +114,19 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
 
   String _normalizeIndianPhone(String? raw) {
     if (raw == null) return '';
+
     final digits = raw.replaceAll(RegExp(r'[^0-9]'), '');
 
     if (digits.length == 10) return digits;
+
     if (digits.length == 12 && digits.startsWith('91')) {
       return digits.substring(2);
     }
+
     if (digits.length > 10) {
       return digits.substring(digits.length - 10);
     }
+
     return digits;
   }
 
@@ -136,6 +148,7 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
 
     try {
       final time = DateFormat('h:mm a').parseStrict(rawTime);
+
       return DateTime(
         date.year,
         date.month,
@@ -173,7 +186,9 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
 
   List<dynamic> get _slots {
     final raw = _recommendation?['slots'];
+
     if (raw is List) return raw;
+
     return [];
   }
 
@@ -201,6 +216,7 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
     if (_selectedSlotIndices.contains(slotIndex)) return false;
     if (_selectedSlotIndices.length >= _frequency) return true;
     if (_isSameDayAlreadySelected(slotIndex)) return true;
+
     return false;
   }
 
@@ -243,7 +259,54 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
 
   List<Map<String, dynamic>> _selectedSlotDetails() {
     final selected = _selectedSlotIndices.map((i) => _slots[i]).toList();
+
     return List<Map<String, dynamic>>.from(selected);
+  }
+
+  String _safePaymentVisitId(
+      Map<String, dynamic> recommendation,
+      double amount,
+      ) {
+    final candidates = [
+      recommendation['visitId'],
+      recommendation['VisitID'],
+      recommendation['visitID'],
+      widget.booking?['visitId'],
+      widget.booking?['VisitID'],
+      widget.booking?['visitID'],
+    ];
+
+    for (final value in candidates) {
+      final text = value?.toString().trim() ?? '';
+
+      if (text.isNotEmpty && text.toLowerCase() != 'null') {
+        return text;
+      }
+    }
+
+    final planName = recommendation['planName']?.toString().trim() ?? '';
+    final slotsKey = _selectedSlotDetails()
+        .map(
+          (slot) =>
+      '${slot['date']?.toString() ?? ''}_'
+          '${slot['time']?.toString() ?? ''}_'
+          '${slot['maaliId']?.toString() ?? ''}',
+    )
+        .join('|');
+
+    return '${widget.userId}|$planName|${amount.toStringAsFixed(2)}|$slotsKey';
+  }
+
+  Future<void> _clearPendingPaymentLocally() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    await prefs.remove('pendingPaymentVisitId');
+    await prefs.remove('pendingPaymentSessionId');
+    await prefs.remove('pendingPaymentUserId');
+    await prefs.remove('pendingPaymentAmount');
+    await prefs.remove('pendingPaymentCreatedAt');
+
+    debugPrint('✅ Pending payment cleared locally');
   }
 
   Future<bool> _createZohoDeal() async {
@@ -258,6 +321,7 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
       selectedSlots.sort((a, b) {
         final aDate = _parseSlotDateTime(a);
         final bDate = _parseSlotDateTime(b);
+
         return aDate.compareTo(bDate);
       });
 
@@ -288,7 +352,8 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
         'planName': recommendation['planName']?.toString() ?? '',
         'monthlyAmount': recommendation['monthlyAmount']?.toString() ?? '0',
         'startDate': DateFormat('yyyy-MM-dd').format(firstVisitDate),
-        'currentCycleStartDate': DateFormat('yyyy-MM-dd').format(firstVisitDate),
+        'currentCycleStartDate':
+        DateFormat('yyyy-MM-dd').format(firstVisitDate),
         'flatNo': recommendation['flatNo']?.toString() ?? '',
         'towerNo': recommendation['towerNo']?.toString() ?? '',
         'society': societyValue,
@@ -305,6 +370,7 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
         'assignedMaliId': selectedSlots.first['maaliId']?.toString() ?? '',
         'secondVisitGap': 0,
         'subscriptionMonthTenure': 1,
+        'paymentSessionId': _currentPaymentSessionId ?? '',
       };
 
       for (int i = 0; i < selectedSlots.length; i++) {
@@ -325,6 +391,7 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
       if (selectedSlots.length >= 2) {
         final secondVisitDate =
         _parseSlotDate((selectedSlots[1]['date'] ?? '').toString());
+
         body['secondVisitGap'] =
             secondVisitDate.difference(firstVisitDateObj).inDays;
       }
@@ -332,13 +399,23 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
       if (selectedSlots.length >= 3) {
         final thirdVisitDate =
         _parseSlotDate((selectedSlots[2]['date'] ?? '').toString());
+
         body['thirdVisitGap'] =
             thirdVisitDate.difference(firstVisitDateObj).inDays;
       }
 
-      await BookingService.postZohoDeal(body);
+      debugPrint('🟡 Creating Zoho deal / AWS booking...');
+      debugPrint('🟡 Zoho deal payload: $body');
+
+      final response = await BookingService.postZohoDeal(body);
+
+      debugPrint('✅ Zoho deal / AWS booking created: $response');
+
       return true;
-    } catch (_) {
+    } catch (e, stackTrace) {
+      debugPrint('❌ Zoho deal / AWS booking creation failed: $e');
+      debugPrint('❌ StackTrace: $stackTrace');
+
       return false;
     }
   }
@@ -395,7 +472,7 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
       final customerPhone =
       _normalizeIndianPhone(recommendation['mobile']?.toString());
       final customerName =
-      (recommendation['fullName']?.toString().trim().isNotEmpty == true)
+      recommendation['fullName']?.toString().trim().isNotEmpty == true
           ? recommendation['fullName'].toString().trim()
           : widget.userName;
 
@@ -405,6 +482,52 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
 
       if (customerPhone.length != 10) {
         throw Exception('Invalid customer mobile number');
+      }
+
+      final prefs = await SharedPreferences.getInstance();
+      final paymentVisitId = _safePaymentVisitId(recommendation, amount);
+
+      final pendingVisitId = prefs.getString('pendingPaymentVisitId') ?? '';
+      final pendingSessionId = prefs.getString('pendingPaymentSessionId') ?? '';
+      final pendingCreatedAt = prefs.getString('pendingPaymentCreatedAt') ?? '';
+
+      bool hasFreshPendingSession = false;
+
+      if (pendingVisitId == paymentVisitId &&
+          pendingSessionId.isNotEmpty &&
+          pendingCreatedAt.isNotEmpty) {
+        final createdAt = DateTime.tryParse(pendingCreatedAt);
+
+        if (createdAt != null) {
+          final minutesOld = DateTime.now().difference(createdAt).inMinutes;
+          hasFreshPendingSession = minutesOld < 15;
+        }
+      }
+
+      if (hasFreshPendingSession) {
+        debugPrint('⚠️ Existing pending payment session found.');
+        debugPrint('⚠️ visitId: $pendingVisitId');
+        debugPrint('⚠️ paymentSessionId: $pendingSessionId');
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'A payment is already in progress. Please wait or contact support if amount was deducted.',
+              ),
+              backgroundColor: Colors.orange,
+            ),
+          );
+
+          setState(() {
+            _isPaying = false;
+            _isCheckoutOpening = false;
+            _isPostPaymentProcessing = false;
+            _processingMessage = '';
+          });
+        }
+
+        return;
       }
 
       final sessionResponse = await BookingService.createZohoPaymentSession(
@@ -419,6 +542,7 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
           'userId': widget.userId,
           'planName': recommendation['planName'] ?? '',
           'flow': 'recommendation_plan_payment',
+          'visitId': paymentVisitId,
         },
       );
 
@@ -432,6 +556,19 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
 
       _currentPaymentSessionId = paymentSessionId;
 
+      await prefs.setString('pendingPaymentVisitId', paymentVisitId);
+      await prefs.setString('pendingPaymentSessionId', paymentSessionId);
+      await prefs.setString('pendingPaymentUserId', widget.userId);
+      await prefs.setString('pendingPaymentAmount', amount.toString());
+      await prefs.setString(
+        'pendingPaymentCreatedAt',
+        DateTime.now().toIso8601String(),
+      );
+
+      debugPrint('✅ Pending payment saved locally');
+      debugPrint('✅ visitId: $paymentVisitId');
+      debugPrint('✅ paymentSessionId: $paymentSessionId');
+
       final options = ZohoPaymentsCheckoutOptions(
         paymentSessionId: paymentSessionId,
         description: recommendation['planName'] ?? 'Recommended Plan',
@@ -443,34 +580,70 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
       );
 
       await Future.delayed(const Duration(milliseconds: 150));
-      if (!mounted) return;
+
+      if (!mounted) {
+        debugPrint('⚠️ Screen unmounted before checkout could open.');
+        return;
+      }
+
+      debugPrint('🟡 Opening Zoho checkout');
+      debugPrint('🟡 paymentSessionId: $paymentSessionId');
+      debugPrint('🟡 userId: ${widget.userId}');
+      debugPrint('🟡 amount: $amount');
+      debugPrint('🟡 customerPhone: $customerPhone');
 
       final result = await _zohoSdk.showCheckout(
         options,
         domain: ZohoPaymentsDomain.india,
         environment: ZohoPaymentsEnvironment.live,
+      )
+          .timeout(
+        const Duration(seconds: 25),
+        onTimeout: () {
+          throw Exception(
+            'Payment page did not open. Please check internet and try again.',
+          );
+        },
       );
 
-      if (!mounted) return;
-      setState(() {
-        _isCheckoutOpening = false;
-      });
+      debugPrint('🟢 Zoho checkout returned');
+      debugPrint('🟢 Result runtimeType: ${result.runtimeType}');
+      debugPrint('🟢 Result: $result');
+      debugPrint('🟢 Current payment session id: $_currentPaymentSessionId');
+
+      if (mounted) {
+        setState(() {
+          _isCheckoutOpening = false;
+        });
+      }
 
       switch (result) {
         case ZohoPaymentsSuccess():
+          debugPrint('✅ ZohoPaymentsSuccess');
+          debugPrint('✅ paymentId: ${result.paymentId}');
+          debugPrint('✅ signature present: ${result.signature.isNotEmpty}');
+
           await _handleZohoPaymentSuccess(
             paymentId: result.paymentId,
             signature: result.signature,
           );
           break;
+
         case ZohoPaymentsFailure():
+          debugPrint('❌ ZohoPaymentsFailure');
+          debugPrint('❌ code: ${result.code}');
+          debugPrint('❌ message: ${result.message}');
+
           _handleZohoPaymentFailure(
             code: result.code,
             message: result.message,
           );
           break;
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
+      debugPrint('❌ Error initiating payment: $e');
+      debugPrint('❌ StackTrace: $stackTrace');
+
       if (!mounted) return;
 
       setState(() {
@@ -493,13 +666,13 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
     required String paymentId,
     required String signature,
   }) async {
-    if (!mounted) return;
-
-    setState(() {
-      _isPostPaymentProcessing = true;
-      _processingMessage =
-      'Payment received. Please do not close the app while we confirm your plan.';
-    });
+    if (mounted) {
+      setState(() {
+        _isPostPaymentProcessing = true;
+        _processingMessage =
+        'Payment received. Please do not close the app while we confirm your plan.';
+      });
+    }
 
     try {
       final verifyResponse = await BookingService.verifyZohoPayment(
@@ -508,27 +681,49 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
         signature: signature,
       );
 
+      debugPrint('✅ Zoho payment verify response: $verifyResponse');
+
+      final status = verifyResponse['status']?.toString().toLowerCase() ?? '';
+
       final verified = verifyResponse['verified'] == true ||
-          verifyResponse['status']?.toString().toLowerCase() == 'success';
+          status == 'success' ||
+          status == 'succeeded' ||
+          status == 'paid' ||
+          status == 'captured' ||
+          status == 'completed';
 
       if (!verified) {
         throw Exception('Payment could not be verified');
       }
 
-      if (!mounted) return;
-      setState(() {
-        _processingMessage =
-        'Payment verified. Finalizing your subscription booking.';
-      });
+      if (mounted) {
+        setState(() {
+          _processingMessage =
+          'Payment verified. Finalizing your subscription booking.';
+        });
+      }
+
+      debugPrint('✅ Payment verified. Calling _createZohoDeal now...');
 
       final isZohoSuccess = await _createZohoDeal();
 
-      if (!mounted) return;
+      debugPrint('✅ _createZohoDeal result: $isZohoSuccess');
+
+      if (isZohoSuccess) {
+        await _clearPendingPaymentLocally();
+      }
+
+      if (!mounted) {
+        debugPrint('⚠️ Booking flow completed but screen was unmounted.');
+        return;
+      }
 
       if (isZohoSuccess) {
         setState(() {
           _isPostPaymentProcessing = false;
+          _isCheckoutOpening = false;
           _isPaying = false;
+          _processingMessage = '';
         });
 
         await showDialog(
@@ -558,10 +753,12 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
         );
 
         if (!mounted) return;
+
         _goToZohoBookings();
       } else {
         setState(() {
           _isPostPaymentProcessing = false;
+          _isCheckoutOpening = false;
           _processingMessage = '';
           _isPaying = false;
         });
@@ -575,20 +772,22 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
           ),
         );
       }
-    } catch (_) {
+    } catch (e, stackTrace) {
+      debugPrint('❌ Payment verification/finalization failed: $e');
+      debugPrint('❌ StackTrace: $stackTrace');
+
       if (!mounted) return;
 
       setState(() {
         _isPostPaymentProcessing = false;
+        _isCheckoutOpening = false;
         _processingMessage = '';
         _isPaying = false;
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Payment received, but verification failed. Please contact support.',
-          ),
+        SnackBar(
+          content: Text('Payment received, but verification failed: $e'),
           backgroundColor: Colors.red,
         ),
       );
@@ -622,6 +821,7 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
 
   String _bookingAddress() {
     final rec = _recommendation ?? {};
+
     final parts = [
       (rec['flatNo'] ?? '').toString().trim(),
       (rec['towerNo'] ?? '').toString().trim().isNotEmpty
@@ -787,9 +987,9 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
               style: ElevatedButton.styleFrom(
                 backgroundColor: paymentStatus != 'pending'
                     ? Colors.grey
-                    : (selectedCount == _frequency
+                    : selectedCount == _frequency
                     ? AppColors.primaryColor
-                    : Colors.grey),
+                    : Colors.grey,
                 foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(30),
@@ -830,6 +1030,7 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
 
   Widget _buildVisitedBookingCard() {
     final booking = widget.booking;
+
     if (booking == null) return const SizedBox.shrink();
 
     final status = (booking['status'] ?? '').toString();
@@ -986,6 +1187,7 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
 
   Widget _buildRemarksCard(Map<String, dynamic> recommendation) {
     final remarks = (recommendation['remarks'] ?? '').toString().trim();
+
     if (remarks.isEmpty) return const SizedBox.shrink();
 
     return Container(
