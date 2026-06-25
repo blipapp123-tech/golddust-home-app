@@ -1,6 +1,8 @@
 import 'dart:convert';
-import 'package:http/http.dart' as http;
+
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+
 class BookingService {
   BookingService._();
 
@@ -42,6 +44,9 @@ class BookingService {
       '1003.6df21b1cd78f2356636629a11492d057.302c0220f162f7868dd0a02411b42c68';
 
   static const String zohoPaymentsAccountId = '60066642528';
+
+  static const String _zohoPaymentRecoveryFinalizeUrl =
+      'https://0yc6hwyquf.execute-api.ap-south-1.amazonaws.com/default/zohoPaymentRecoveryFinalize';
 
   static const Map<String, String> _headers = {
     'Content-Type': 'application/json',
@@ -219,10 +224,9 @@ class BookingService {
 
       final booking = Map<String, dynamic>.from(rawBooking);
 
-      final hasMonthlyVisitFields =
-          booking.containsKey('visitDay1') ||
-              booking.containsKey('visitTimeSlot1') ||
-              booking.containsKey('visitDate1');
+      final hasMonthlyVisitFields = booking.containsKey('visitDay1') ||
+          booking.containsKey('visitTimeSlot1') ||
+          booking.containsKey('visitDate1');
 
       if (hasMonthlyVisitFields) {
         transformedBookings.add({
@@ -535,9 +539,10 @@ class BookingService {
     required String customerPhone,
     required String customerEmail,
     Map<String, dynamic>? metadata,
+    Map<String, dynamic>? bookingPayload,
   }) async {
     try {
-      final data = await _post(_zohoCreatePaymentSessionUrl, {
+      final requestBody = {
         'userId': userId,
         'amount': amount,
         'currency': currency,
@@ -546,7 +551,14 @@ class BookingService {
         'customerPhone': customerPhone,
         'customerEmail': customerEmail,
         'metadata': metadata ?? {},
-      });
+        'bookingPayload': bookingPayload ?? {},
+      };
+
+      debugPrint('🟡 Creating Zoho payment session: $requestBody');
+
+      final data = await _post(_zohoCreatePaymentSessionUrl, requestBody);
+
+      debugPrint('✅ Zoho payment session response: $data');
 
       if (data is Map<String, dynamic>) {
         return data;
@@ -582,4 +594,109 @@ class BookingService {
       throw Exception('Failed to verify Zoho payment: $e');
     }
   }
+
+  static Future<Map<String, dynamic>> finalizeZohoPaymentRecovery({
+    required String paymentSessionId,
+    required String paymentId,
+    String signature = '',
+  }) async {
+    try {
+      final payload = {
+        'mode': 'FINALIZE_PAYMENT',
+        'paymentSessionId': paymentSessionId,
+        'paymentId': paymentId,
+        'signature': signature,
+      };
+
+      debugPrint('📤 finalizeZohoPaymentRecovery request: $payload');
+
+      final response = await http
+          .post(
+        Uri.parse(_zohoPaymentRecoveryFinalizeUrl),
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(payload),
+      )
+          .timeout(
+        const Duration(seconds: 35),
+        onTimeout: () {
+          throw Exception(
+            'Booking finalization timed out. Please contact support if payment was deducted.',
+          );
+        },
+      );
+
+      debugPrint('📥 finalizeZohoPaymentRecovery status: ${response.statusCode}');
+      debugPrint('📥 finalizeZohoPaymentRecovery body: ${response.body}');
+
+      final decoded = jsonDecode(response.body);
+
+      if (decoded is! Map<String, dynamic>) {
+        throw Exception('Invalid response from booking finalization service');
+      }
+
+      final success = decoded['success'] == true ||
+          decoded['bookingStatus'] == 'BOOKING_CREATED' ||
+          decoded['alreadyCreated'] == true;
+
+      if (!success) {
+        throw Exception(
+          decoded['message'] ??
+              decoded['error'] ??
+              'Payment succeeded but booking finalization failed',
+        );
+      }
+
+      return decoded;
+    } catch (e) {
+      debugPrint('❌ finalizeZohoPaymentRecovery error: $e');
+      rethrow;
+    }
+  }
+
+  static Future<Map<String, dynamic>> recoverOneZohoPaymentRecovery({
+    required String paymentSessionId,
+  }) async {
+    try {
+      final payload = {
+        'mode': 'RECOVER_ONE',
+        'paymentSessionId': paymentSessionId,
+      };
+
+      debugPrint('📤 recoverOneZohoPaymentRecovery request: $payload');
+
+      final response = await http
+          .post(
+        Uri.parse(_zohoPaymentRecoveryFinalizeUrl),
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(payload),
+      )
+          .timeout(
+        const Duration(seconds: 35),
+        onTimeout: () {
+          throw Exception(
+            'Payment status check timed out. If amount was deducted, booking will be confirmed automatically.',
+          );
+        },
+      );
+
+      debugPrint('📥 recoverOneZohoPaymentRecovery status: ${response.statusCode}');
+      debugPrint('📥 recoverOneZohoPaymentRecovery body: ${response.body}');
+
+      final decoded = jsonDecode(response.body);
+
+      if (decoded is! Map<String, dynamic>) {
+        throw Exception('Invalid response from payment recovery service');
+      }
+
+      return decoded;
+    } catch (e) {
+      debugPrint('❌ recoverOneZohoPaymentRecovery error: $e');
+      rethrow;
+    }
+  }
+
 }

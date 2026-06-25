@@ -257,6 +257,14 @@ class _ZohoBookingScreenState extends State<ZohoBookingScreen> {
         options,
         domain: ZohoPaymentsDomain.india,
         environment: ZohoPaymentsEnvironment.live,
+      )
+          .timeout(
+        const Duration(seconds: 25),
+        onTimeout: () {
+          throw Exception(
+            'Payment page did not open. Please check internet and try again.',
+          );
+        },
       );
 
       switch (result) {
@@ -295,8 +303,14 @@ class _ZohoBookingScreenState extends State<ZohoBookingScreen> {
         signature: signature,
       );
 
+      final status = verifyResponse['status']?.toString().toLowerCase() ?? '';
+
       final verified = verifyResponse['verified'] == true ||
-          verifyResponse['status']?.toString().toLowerCase() == 'success';
+          status == 'success' ||
+          status == 'succeeded' ||
+          status == 'paid' ||
+          status == 'captured' ||
+          status == 'completed';
 
       if (!verified) {
         throw Exception('Payment could not be verified');

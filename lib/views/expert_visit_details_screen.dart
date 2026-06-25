@@ -402,130 +402,131 @@ class _ExpertVisitDetailsScreenState extends State<ExpertVisitDetailsScreen> {
     });
   }
 
+  Map<String, dynamic> _buildZohoDealPayload() {
+    final recommendation = _currentRecommendation;
+    final currentSlots = _currentSelectedSlots;
+
+    if (recommendation == null) {
+      throw Exception('Recommendation missing');
+    }
+
+    if (currentSlots == null || currentSlots.isEmpty) {
+      throw Exception('No slots selected');
+    }
+
+    final selectedSlots = List<Map<String, dynamic>>.from(currentSlots);
+
+    selectedSlots.sort((a, b) {
+      final aDate = _parseSlotDateTime(a);
+      final bDate = _parseSlotDateTime(b);
+      return aDate.compareTo(bDate);
+    });
+
+    final fullName =
+    recommendation['fullName']?.toString().trim().isNotEmpty == true
+        ? recommendation['fullName'].toString().trim()
+        : _customerName;
+
+    final nameParts = fullName.split(RegExp(r'\s+'));
+    final firstName = nameParts.isNotEmpty ? nameParts.first : 'User';
+    final lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
+
+    final firstVisitDate =
+    _parseSlotDate(selectedSlots.first['date']?.toString() ?? '');
+
+    final frequency =
+        int.tryParse(recommendation['frequency']?.toString() ?? '1') ?? 1;
+
+    final serviceFrequency = frequency.toString();
+
+    final sectorValue =
+    recommendation['sector']?.toString().trim().isNotEmpty == true
+        ? recommendation['sector'].toString().trim()
+        : _text(_booking['sector'] ?? _booking['Sector']);
+
+    final rawSociety =
+    recommendation['society']?.toString().trim().isNotEmpty == true
+        ? recommendation['society'].toString().trim()
+        : _text(_booking['society'] ?? _booking['Society']);
+
+    final societyValue = rawSociety.isNotEmpty ? rawSociety : sectorValue;
+
+    final Map<String, dynamic> body = {
+      'firstName': firstName,
+      'lastName': lastName,
+      'mobile': recommendation['mobile']?.toString() ??
+          recommendation['phoneNo']?.toString() ??
+          _phone,
+      'leadSource':
+      recommendation['leadSource']?.toString() ?? 'External Reference',
+      'planName': recommendation['planName']?.toString() ?? '',
+      'monthlyAmount': recommendation['monthlyAmount']?.toString() ?? '0',
+      'startDate': DateFormat('yyyy-MM-dd').format(firstVisitDate),
+      'currentCycleStartDate': DateFormat('yyyy-MM-dd').format(firstVisitDate),
+      'flatNo': recommendation['flatNo']?.toString() ??
+          _text(_booking['flatNo'] ?? _booking['Flat_No']),
+      'towerNo': recommendation['towerNo']?.toString() ??
+          _text(_booking['towerNo'] ?? _booking['Tower_No']),
+      'society': societyValue,
+      'sector': sectorValue,
+      'mailingCity': 'Noida',
+      'mailingState': 'Uttar Pradesh',
+      'mailingCountry': 'India',
+      'oneTime': recommendation['oneTime']?.toString() ?? 'n',
+      'frequency': recommendation['frequency']?.toString() ?? '1',
+      'serviceFrequency': serviceFrequency,
+      'remarks': recommendation['remarks']?.toString() ??
+          _text(_booking['remarks'] ?? _booking['Remark']),
+      'userID': recommendation['userID']?.toString() ?? widget.userId,
+      'assignedMali': selectedSlots.first['maaliName']?.toString() ?? '',
+      'assignedMaliId': selectedSlots.first['maaliId']?.toString() ?? '',
+      'secondVisitGap': 0,
+      'subscriptionMonthTenure': 1,
+      'sourceVisitID': _visitId,
+      'paymentSessionId': _currentPaymentSessionId ?? '',
+    };
+
+    for (int i = 0; i < selectedSlots.length; i++) {
+      final slot = selectedSlots[i];
+      final visitNumber = i + 1;
+
+      final visitDate = _formatDateToYMD(slot['date']?.toString() ?? '');
+
+      body['visitDay$visitNumber'] = slot['day']?.toString() ?? '';
+      body['visitTimeSlot$visitNumber'] = slot['time']?.toString() ?? '';
+      body['visitDate$visitNumber'] = visitDate;
+      body['assignedMali$visitNumber'] = slot['maaliName']?.toString() ?? '';
+      body['assignedMaliId$visitNumber'] = slot['maaliId']?.toString() ?? '';
+    }
+
+    final firstVisitDateObj =
+    _parseSlotDate(selectedSlots.first['date']?.toString() ?? '');
+
+    if (selectedSlots.length >= 2) {
+      final secondVisitDate =
+      _parseSlotDate(selectedSlots[1]['date']?.toString() ?? '');
+
+      body['secondVisitGap'] =
+          secondVisitDate.difference(firstVisitDateObj).inDays;
+    }
+
+    if (selectedSlots.length >= 3) {
+      final thirdVisitDate =
+      _parseSlotDate(selectedSlots[2]['date']?.toString() ?? '');
+
+      body['thirdVisitGap'] =
+          thirdVisitDate.difference(firstVisitDateObj).inDays;
+    }
+
+    return body;
+  }
+
   Future<bool> _createZohoDeal() async {
     try {
       debugPrint('\n================ ZOHO DEAL START ================\n');
 
-      final recommendation = _currentRecommendation;
-      final currentSlots = _currentSelectedSlots;
-
-      if (recommendation == null) {
-        throw Exception('Recommendation missing');
-      }
-
-      if (currentSlots == null || currentSlots.isEmpty) {
-        throw Exception('No slots selected');
-      }
-
-      final selectedSlots = List<Map<String, dynamic>>.from(currentSlots);
-
-      selectedSlots.sort((a, b) {
-        final aDate = _parseSlotDateTime(a);
-        final bDate = _parseSlotDateTime(b);
-
-        return aDate.compareTo(bDate);
-      });
-
-      final fullName =
-      recommendation['fullName']?.toString().trim().isNotEmpty == true
-          ? recommendation['fullName'].toString().trim()
-          : _customerName;
-
-      final nameParts = fullName.split(RegExp(r'\s+'));
-
-      final firstName = nameParts.isNotEmpty ? nameParts.first : 'User';
-      final lastName =
-      nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
-
-      final firstVisitDate =
-      _parseSlotDate(selectedSlots.first['date']?.toString() ?? '');
-
-      final frequency =
-          int.tryParse(recommendation['frequency']?.toString() ?? '1') ?? 1;
-
-      final serviceFrequency = frequency.toString();
-
-      final sectorValue =
-      recommendation['sector']?.toString().trim().isNotEmpty == true
-          ? recommendation['sector'].toString().trim()
-          : _text(_booking['sector'] ?? _booking['Sector']);
-
-      final rawSociety =
-      recommendation['society']?.toString().trim().isNotEmpty == true
-          ? recommendation['society'].toString().trim()
-          : _text(_booking['society'] ?? _booking['Society']);
-
-      final societyValue = rawSociety.isNotEmpty ? rawSociety : sectorValue;
-
-      final Map<String, dynamic> body = {
-        'firstName': firstName,
-        'lastName': lastName,
-        'mobile': recommendation['mobile']?.toString() ??
-            recommendation['phoneNo']?.toString() ??
-            _phone,
-        'leadSource':
-        recommendation['leadSource']?.toString() ?? 'External Reference',
-        'planName': recommendation['planName']?.toString() ?? '',
-        'monthlyAmount': recommendation['monthlyAmount']?.toString() ?? '0',
-        'startDate': DateFormat('yyyy-MM-dd').format(firstVisitDate),
-        'currentCycleStartDate':
-        DateFormat('yyyy-MM-dd').format(firstVisitDate),
-        'flatNo': recommendation['flatNo']?.toString() ??
-            _text(_booking['flatNo'] ?? _booking['Flat_No']),
-        'towerNo': recommendation['towerNo']?.toString() ??
-            _text(_booking['towerNo'] ?? _booking['Tower_No']),
-        'society': societyValue,
-        'sector': sectorValue,
-        'mailingCity': 'Noida',
-        'mailingState': 'Uttar Pradesh',
-        'mailingCountry': 'India',
-        'oneTime': recommendation['oneTime']?.toString() ?? 'n',
-        'frequency': recommendation['frequency']?.toString() ?? '1',
-        'serviceFrequency': serviceFrequency,
-        'remarks': recommendation['remarks']?.toString() ??
-            _text(_booking['remarks'] ?? _booking['Remark']),
-        'userID': recommendation['userID']?.toString() ?? widget.userId,
-        'assignedMali': selectedSlots.first['maaliName']?.toString() ?? '',
-        'assignedMaliId': selectedSlots.first['maaliId']?.toString() ?? '',
-        'secondVisitGap': 0,
-        'subscriptionMonthTenure': 1,
-        'sourceVisitID': _visitId,
-      };
-
-      for (int i = 0; i < selectedSlots.length; i++) {
-        final slot = selectedSlots[i];
-        final visitNumber = i + 1;
-
-        final visitDate = _formatDateToYMD(slot['date']?.toString() ?? '');
-
-        body['visitDay$visitNumber'] = slot['day']?.toString() ?? '';
-        body['visitTimeSlot$visitNumber'] = slot['time']?.toString() ?? '';
-        body['visitDate$visitNumber'] = visitDate;
-
-        body['assignedMali$visitNumber'] =
-            slot['maaliName']?.toString() ?? '';
-        body['assignedMaliId$visitNumber'] =
-            slot['maaliId']?.toString() ?? '';
-      }
-
-      final firstVisitDateObj =
-      _parseSlotDate(selectedSlots.first['date']?.toString() ?? '');
-
-      if (selectedSlots.length >= 2) {
-        final secondVisitDate =
-        _parseSlotDate(selectedSlots[1]['date']?.toString() ?? '');
-
-        body['secondVisitGap'] =
-            secondVisitDate.difference(firstVisitDateObj).inDays;
-      }
-
-      if (selectedSlots.length >= 3) {
-        final thirdVisitDate =
-        _parseSlotDate(selectedSlots[2]['date']?.toString() ?? '');
-
-        body['thirdVisitGap'] =
-            thirdVisitDate.difference(firstVisitDateObj).inDays;
-      }
+      final body = _buildZohoDealPayload();
+      body['paymentSessionId'] = _currentPaymentSessionId ?? '';
 
       debugPrint('📦 FINAL ZOHO PAYLOAD: $body');
 
@@ -545,7 +546,11 @@ class _ExpertVisitDetailsScreenState extends State<ExpertVisitDetailsScreen> {
   }
 
   Future<void> _handlePayment(int recommendationIndex) async {
-    if (_isCheckoutOpening || _isPostPaymentProcessing) return;
+    if (_isCheckoutOpening ||
+        _isPostPaymentProcessing ||
+        _isPaying[recommendationIndex] == true) {
+      return;
+    }
 
     final recommendation = _recommendations[recommendationIndex];
 
@@ -580,9 +585,14 @@ class _ExpertVisitDetailsScreenState extends State<ExpertVisitDetailsScreen> {
       _isCheckoutOpening = true;
     });
 
+    _currentPaymentSessionId = null;
+
     try {
       final slots = recommendation['slots'] as List? ?? [];
-      final selectedSlotDetails = selectedSlots.map((i) => slots[i]).toList();
+
+      final selectedSlotDetails = selectedSlots
+          .map((i) => Map<String, dynamic>.from(slots[i] as Map))
+          .toList();
 
       _currentPaymentIndex = recommendationIndex;
       _currentSelectedSlots = selectedSlotDetails;
@@ -610,6 +620,12 @@ class _ExpertVisitDetailsScreenState extends State<ExpertVisitDetailsScreen> {
         throw Exception('Invalid customer mobile number');
       }
 
+      final bookingPayload = _buildZohoDealPayload();
+
+      debugPrint(
+        '🟡 Expert visit booking payload prepared before payment session: $bookingPayload',
+      );
+
       final sessionResponse = await BookingService.createZohoPaymentSession(
         userId: widget.userId,
         amount: amount,
@@ -623,6 +639,15 @@ class _ExpertVisitDetailsScreenState extends State<ExpertVisitDetailsScreen> {
           'visitId': _visitId,
           'planName': recommendation['planName'] ?? '',
           'recommendationIndex': recommendationIndex.toString(),
+          'flow': 'expert_visit_plan_payment',
+        },
+        bookingPayload: bookingPayload,
+      ).timeout(
+        const Duration(seconds: 25),
+        onTimeout: () {
+          throw Exception(
+            'Payment session could not be created. Please check internet and try again.',
+          );
         },
       );
 
@@ -654,7 +679,8 @@ class _ExpertVisitDetailsScreenState extends State<ExpertVisitDetailsScreen> {
       debugPrint('🟡 paymentSessionId: $paymentSessionId');
       debugPrint('🟡 customerPhone: $customerPhone');
 
-      final result = await _zohoSdk.showCheckout(
+      final result = await _zohoSdk
+          .showCheckout(
         options,
         domain: ZohoPaymentsDomain.india,
         environment: ZohoPaymentsEnvironment.live,
@@ -689,14 +715,16 @@ class _ExpertVisitDetailsScreenState extends State<ExpertVisitDetailsScreen> {
           message: result.message,
         );
       } else {
-        _handleZohoPaymentFailure(
-          code: 'UNKNOWN',
-          message: 'Payment failed or cancelled. Please try again.',
-        );
+        await _tryRecoverPaymentNow();
       }
     } catch (e, stack) {
       debugPrint('❌ Payment initiation error: $e');
       debugPrint('$stack');
+
+      if ((_currentPaymentSessionId ?? '').isNotEmpty) {
+        await _tryRecoverPaymentNow();
+        return;
+      }
 
       if (!mounted) return;
 
@@ -722,13 +750,14 @@ class _ExpertVisitDetailsScreenState extends State<ExpertVisitDetailsScreen> {
   }) async {
     debugPrint('✅ Zoho Payment Success: $paymentId');
 
-    if (!mounted) return;
-
-    setState(() {
-      _isPostPaymentProcessing = true;
-      _processingMessage =
-      'Payment received. Please do not close the app while we confirm your booking.';
-    });
+    if (mounted) {
+      setState(() {
+        _isCheckoutOpening = false;
+        _isPostPaymentProcessing = true;
+        _processingMessage =
+        'Payment received. Please do not close the app while we confirm your booking.';
+      });
+    }
 
     try {
       final verifyResponse = await BookingService.verifyZohoPayment(
@@ -737,31 +766,59 @@ class _ExpertVisitDetailsScreenState extends State<ExpertVisitDetailsScreen> {
         signature: signature,
       );
 
+      debugPrint('✅ Zoho payment verify response: $verifyResponse');
+
+      final status = verifyResponse['status']?.toString().toLowerCase() ?? '';
+
       final verified = verifyResponse['verified'] == true ||
-          verifyResponse['status']?.toString().toLowerCase() == 'success';
+          status == 'success' ||
+          status == 'succeeded' ||
+          status == 'paid' ||
+          status == 'captured' ||
+          status == 'completed';
 
       if (!verified) {
         throw Exception('Payment could not be verified');
       }
 
-      if (!mounted) return;
+      if (mounted) {
+        setState(() {
+          _processingMessage =
+          'Payment verified. Finalizing your subscription. Please do not close the app.';
+        });
+      }
 
-      setState(() {
-        _processingMessage =
-        'Payment verified. Finalizing your subscription. Please do not close the app.';
-      });
+      debugPrint('✅ Payment verified. Calling zohoPaymentRecoveryFinalize now...');
 
-      final isZohoSuccess = await _createZohoDeal();
+      final finalizeResponse = await BookingService.finalizeZohoPaymentRecovery(
+        paymentSessionId: _currentPaymentSessionId ?? '',
+        paymentId: paymentId,
+        signature: signature,
+      );
 
-      if (!mounted) return;
+      debugPrint('✅ zohoPaymentRecoveryFinalize response: $finalizeResponse');
+
+      final isZohoSuccess = finalizeResponse['success'] == true ||
+          finalizeResponse['bookingStatus'] == 'BOOKING_CREATED' ||
+          finalizeResponse['alreadyCreated'] == true;
+
+      debugPrint('✅ Final booking creation result: $isZohoSuccess');
+
+      if (!mounted) {
+        debugPrint('⚠️ Booking flow completed but screen was unmounted.');
+        return;
+      }
 
       if (isZohoSuccess) {
         setState(() {
+          _isCheckoutOpening = false;
           _isPostPaymentProcessing = false;
           _processingMessage = '';
+
           if (_currentPaymentIndex != null) {
             _isPaying[_currentPaymentIndex!] = false;
           }
+
           _booking['status'] = 'Subscription booked';
         });
 
@@ -781,8 +838,10 @@ class _ExpertVisitDetailsScreenState extends State<ExpertVisitDetailsScreen> {
         Navigator.pop(context, true);
       } else {
         setState(() {
+          _isCheckoutOpening = false;
           _isPostPaymentProcessing = false;
           _processingMessage = '';
+
           if (_currentPaymentIndex != null) {
             _isPaying[_currentPaymentIndex!] = false;
           }
@@ -804,21 +863,141 @@ class _ExpertVisitDetailsScreenState extends State<ExpertVisitDetailsScreen> {
       if (!mounted) return;
 
       setState(() {
+        _isCheckoutOpening = false;
         _isPostPaymentProcessing = false;
         _processingMessage = '';
+
         if (_currentPaymentIndex != null) {
           _isPaying[_currentPaymentIndex!] = false;
         }
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
+        SnackBar(
           content: Text(
-            'Payment received, but verification failed. Please contact support.',
+            'Payment received, but verification failed: $e',
           ),
           backgroundColor: Colors.red,
         ),
       );
+    }
+  }
+
+  void _showPaymentPendingDialog() {
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(24),
+        ),
+        title: const Text(
+          'Payment Confirmation Pending',
+          style: TextStyle(fontWeight: FontWeight.w800),
+        ),
+        content: const Text(
+          'If your amount was deducted, please do not pay again. '
+              'Your subscription will be confirmed automatically within a few minutes.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<bool> _tryRecoverPaymentNow() async {
+    final paymentSessionId = _currentPaymentSessionId ?? '';
+
+    if (paymentSessionId.isEmpty) {
+      return false;
+    }
+
+    try {
+      if (mounted) {
+        setState(() {
+          _isCheckoutOpening = false;
+          _isPostPaymentProcessing = true;
+          _processingMessage =
+          'Checking your payment status. Please do not pay again.';
+        });
+      }
+
+      final response = await BookingService.recoverOneZohoPaymentRecovery(
+        paymentSessionId: paymentSessionId,
+      );
+
+      debugPrint('✅ recoverOne response: $response');
+
+      final created = response['success'] == true &&
+          (response['bookingStatus'] == 'BOOKING_CREATED' ||
+              response['alreadyCreated'] == true);
+
+      if (!mounted) return created;
+
+      if (created) {
+        setState(() {
+          _isCheckoutOpening = false;
+          _isPostPaymentProcessing = false;
+          _processingMessage = '';
+
+          if (_currentPaymentIndex != null) {
+            _isPaying[_currentPaymentIndex!] = false;
+          }
+
+          _booking['status'] = 'Subscription booked';
+        });
+
+        if (widget.onRefreshRequested != null) {
+          await widget.onRefreshRequested!();
+        }
+
+        if (!mounted) return true;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Payment successful. Your subscription is activated.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+
+        Navigator.pop(context, true);
+        return true;
+      }
+
+      setState(() {
+        _isCheckoutOpening = false;
+        _isPostPaymentProcessing = false;
+        _processingMessage = '';
+
+        if (_currentPaymentIndex != null) {
+          _isPaying[_currentPaymentIndex!] = false;
+        }
+      });
+
+      _showPaymentPendingDialog();
+      return false;
+    } catch (e) {
+      debugPrint('❌ Immediate payment recovery check failed: $e');
+
+      if (!mounted) return false;
+
+      setState(() {
+        _isCheckoutOpening = false;
+        _isPostPaymentProcessing = false;
+        _processingMessage = '';
+
+        if (_currentPaymentIndex != null) {
+          _isPaying[_currentPaymentIndex!] = false;
+        }
+      });
+
+      _showPaymentPendingDialog();
+      return false;
     }
   }
 

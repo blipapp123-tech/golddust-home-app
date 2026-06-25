@@ -309,100 +309,242 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
     debugPrint('✅ Pending payment cleared locally');
   }
 
-  Future<bool> _createZohoDeal() async {
-    try {
-      final recommendation = _recommendation!;
-      final selectedSlots = _selectedSlotDetails();
+  void _showPaymentPendingDialog() {
+    if (!mounted) return;
 
-      if (selectedSlots.isEmpty) {
-        throw Exception('No slots selected');
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(24),
+        ),
+        title: const Text(
+          'Payment Confirmation Pending',
+          style: TextStyle(fontWeight: FontWeight.w800),
+        ),
+        content: const Text(
+          'If your amount was deducted, please do not pay again. '
+              'Your booking will be confirmed automatically within a few minutes.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<bool> _tryRecoverPaymentNow() async {
+    final paymentSessionId = _currentPaymentSessionId ?? '';
+
+    if (paymentSessionId.isEmpty) {
+      return false;
+    }
+
+    try {
+      if (mounted) {
+        setState(() {
+          _isCheckoutOpening = false;
+          _isPostPaymentProcessing = true;
+          _processingMessage =
+          'Checking your payment status. Please do not pay again.';
+        });
       }
 
-      selectedSlots.sort((a, b) {
-        final aDate = _parseSlotDateTime(a);
-        final bDate = _parseSlotDateTime(b);
+      final response = await BookingService.recoverOneZohoPaymentRecovery(
+        paymentSessionId: paymentSessionId,
+      );
 
-        return aDate.compareTo(bDate);
+      debugPrint('✅ recoverOne response: $response');
+
+      final created = response['success'] == true &&
+          (response['bookingStatus'] == 'BOOKING_CREATED' ||
+              response['alreadyCreated'] == true);
+
+      if (!mounted) return created;
+
+      if (created) {
+        await _clearPendingPaymentLocally();
+
+        setState(() {
+          _isCheckoutOpening = false;
+          _isPostPaymentProcessing = false;
+          _isPaying = false;
+          _processingMessage = '';
+        });
+
+        await showDialog(
+          context: context,
+          builder: (_) => AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(24),
+            ),
+            title: const Text(
+              'Plan Activated',
+              style: TextStyle(fontWeight: FontWeight.w800),
+            ),
+            content: const Text(
+              'Your subscription plan has been activated successfully.',
+            ),
+            actions: [
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primaryColor,
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+
+        if (!mounted) return true;
+
+        _goToZohoBookings();
+        return true;
+      }
+
+      setState(() {
+        _isCheckoutOpening = false;
+        _isPostPaymentProcessing = false;
+        _isPaying = false;
+        _processingMessage = '';
       });
 
-      final rawFullName =
-      recommendation['fullName']?.toString().trim().isNotEmpty == true
-          ? recommendation['fullName'].toString().trim()
-          : '${recommendation['firstName'] ?? ''} ${recommendation['lastName'] ?? ''}'
-          .trim();
+      _showPaymentPendingDialog();
+      return false;
+    } catch (e) {
+      debugPrint('❌ Immediate payment recovery check failed: $e');
 
-      final nameParts = rawFullName.split(RegExp(r'\s+'));
-      final firstName = nameParts.isNotEmpty ? nameParts.first : 'User';
-      final lastName =
-      nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
+      if (!mounted) return false;
 
-      final firstVisitDate =
-      _parseSlotDate((selectedSlots.first['date'] ?? '').toString());
+      setState(() {
+        _isCheckoutOpening = false;
+        _isPostPaymentProcessing = false;
+        _isPaying = false;
+        _processingMessage = '';
+      });
 
-      final sectorValue = recommendation['sector']?.toString().trim() ?? '';
-      final rawSociety = recommendation['society']?.toString().trim() ?? '';
-      final societyValue = rawSociety.isNotEmpty ? rawSociety : sectorValue;
+      _showPaymentPendingDialog();
+      return false;
+    }
+  }
 
-      final Map<String, dynamic> body = {
-        'firstName': firstName,
-        'lastName': lastName,
-        'mobile': recommendation['mobile']?.toString() ?? '',
-        'leadSource':
-        recommendation['leadSource']?.toString() ?? 'External Reference',
-        'planName': recommendation['planName']?.toString() ?? '',
-        'monthlyAmount': recommendation['monthlyAmount']?.toString() ?? '0',
-        'startDate': DateFormat('yyyy-MM-dd').format(firstVisitDate),
-        'currentCycleStartDate':
-        DateFormat('yyyy-MM-dd').format(firstVisitDate),
-        'flatNo': recommendation['flatNo']?.toString() ?? '',
-        'towerNo': recommendation['towerNo']?.toString() ?? '',
-        'society': societyValue,
-        'sector': sectorValue,
-        'mailingCity': 'Noida',
-        'mailingState': 'Uttar Pradesh',
-        'mailingCountry': 'India',
-        'oneTime': recommendation['oneTime']?.toString() ?? 'n',
-        'frequency': recommendation['frequency']?.toString() ?? '1',
-        'serviceFrequency': _frequency.toString(),
-        'remarks': recommendation['remarks']?.toString() ?? '',
-        'userID': recommendation['userID']?.toString() ?? widget.userId,
-        'assignedMali': selectedSlots.first['maaliName']?.toString() ?? '',
-        'assignedMaliId': selectedSlots.first['maaliId']?.toString() ?? '',
-        'secondVisitGap': 0,
-        'subscriptionMonthTenure': 1,
-        'paymentSessionId': _currentPaymentSessionId ?? '',
-      };
+  Map<String, dynamic> _buildZohoDealPayload() {
+    final recommendation = _recommendation!;
+    final selectedSlots = _selectedSlotDetails();
 
-      for (int i = 0; i < selectedSlots.length; i++) {
-        final slot = selectedSlots[i];
-        final visitNumber = i + 1;
+    if (selectedSlots.isEmpty) {
+      throw Exception('No slots selected');
+    }
 
-        body['visitDay$visitNumber'] = slot['day']?.toString() ?? '';
-        body['visitTimeSlot$visitNumber'] = slot['time']?.toString() ?? '';
-        body['visitDate$visitNumber'] =
-            _formatDateToYMD(slot['date']?.toString() ?? '');
-        body['assignedMali$visitNumber'] = slot['maaliName']?.toString() ?? '';
-        body['assignedMaliId$visitNumber'] = slot['maaliId']?.toString() ?? '';
-      }
+    selectedSlots.sort((a, b) {
+      final aDate = _parseSlotDateTime(a);
+      final bDate = _parseSlotDateTime(b);
 
-      final firstVisitDateObj =
-      _parseSlotDate((selectedSlots.first['date'] ?? '').toString());
+      return aDate.compareTo(bDate);
+    });
 
-      if (selectedSlots.length >= 2) {
-        final secondVisitDate =
-        _parseSlotDate((selectedSlots[1]['date'] ?? '').toString());
+    final rawFullName =
+    recommendation['fullName']?.toString().trim().isNotEmpty == true
+        ? recommendation['fullName'].toString().trim()
+        : '${recommendation['firstName'] ?? ''} ${recommendation['lastName'] ?? ''}'
+        .trim();
 
-        body['secondVisitGap'] =
-            secondVisitDate.difference(firstVisitDateObj).inDays;
-      }
+    final nameParts = rawFullName.split(RegExp(r'\s+'));
+    final firstName = nameParts.isNotEmpty ? nameParts.first : 'User';
+    final lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
 
-      if (selectedSlots.length >= 3) {
-        final thirdVisitDate =
-        _parseSlotDate((selectedSlots[2]['date'] ?? '').toString());
+    final firstVisitDate =
+    _parseSlotDate((selectedSlots.first['date'] ?? '').toString());
 
-        body['thirdVisitGap'] =
-            thirdVisitDate.difference(firstVisitDateObj).inDays;
-      }
+    final sectorValue = recommendation['sector']?.toString().trim() ?? '';
+    final rawSociety = recommendation['society']?.toString().trim() ?? '';
+    final societyValue = rawSociety.isNotEmpty ? rawSociety : sectorValue;
+    final sourceVisitId = (
+        recommendation['visitId'] ??
+            recommendation['VisitID'] ??
+            recommendation['visitID'] ??
+            widget.booking?['visitId'] ??
+            widget.booking?['VisitID'] ??
+            widget.booking?['visitID'] ??
+            ''
+    )
+        .toString()
+        .trim();
+
+    final Map<String, dynamic> body = {
+      'firstName': firstName,
+      'lastName': lastName,
+      'mobile': recommendation['mobile']?.toString() ?? '',
+      'leadSource':
+      recommendation['leadSource']?.toString() ?? 'External Reference',
+      'planName': recommendation['planName']?.toString() ?? '',
+      'monthlyAmount': recommendation['monthlyAmount']?.toString() ?? '0',
+      'startDate': DateFormat('yyyy-MM-dd').format(firstVisitDate),
+      'currentCycleStartDate': DateFormat('yyyy-MM-dd').format(firstVisitDate),
+      'flatNo': recommendation['flatNo']?.toString() ?? '',
+      'towerNo': recommendation['towerNo']?.toString() ?? '',
+      'society': societyValue,
+      'sector': sectorValue,
+      'mailingCity': 'Noida',
+      'mailingState': 'Uttar Pradesh',
+      'mailingCountry': 'India',
+      'oneTime': recommendation['oneTime']?.toString() ?? 'n',
+      'frequency': recommendation['frequency']?.toString() ?? '1',
+      'serviceFrequency': _frequency.toString(),
+      'remarks': recommendation['remarks']?.toString() ?? '',
+      'userID': recommendation['userID']?.toString() ?? widget.userId,
+      'assignedMali': selectedSlots.first['maaliName']?.toString() ?? '',
+      'assignedMaliId': selectedSlots.first['maaliId']?.toString() ?? '',
+      'secondVisitGap': 0,
+      'subscriptionMonthTenure': 1,
+      'sourceVisitID': sourceVisitId,
+      'paymentSessionId': _currentPaymentSessionId ?? '',
+    };
+
+    for (int i = 0; i < selectedSlots.length; i++) {
+      final slot = selectedSlots[i];
+      final visitNumber = i + 1;
+
+      body['visitDay$visitNumber'] = slot['day']?.toString() ?? '';
+      body['visitTimeSlot$visitNumber'] = slot['time']?.toString() ?? '';
+      body['visitDate$visitNumber'] =
+          _formatDateToYMD(slot['date']?.toString() ?? '');
+      body['assignedMali$visitNumber'] = slot['maaliName']?.toString() ?? '';
+      body['assignedMaliId$visitNumber'] = slot['maaliId']?.toString() ?? '';
+    }
+
+    final firstVisitDateObj =
+    _parseSlotDate((selectedSlots.first['date'] ?? '').toString());
+
+    if (selectedSlots.length >= 2) {
+      final secondVisitDate =
+      _parseSlotDate((selectedSlots[1]['date'] ?? '').toString());
+
+      body['secondVisitGap'] =
+          secondVisitDate.difference(firstVisitDateObj).inDays;
+    }
+
+    if (selectedSlots.length >= 3) {
+      final thirdVisitDate =
+      _parseSlotDate((selectedSlots[2]['date'] ?? '').toString());
+
+      body['thirdVisitGap'] =
+          thirdVisitDate.difference(firstVisitDateObj).inDays;
+    }
+
+    return body;
+  }
+
+  Future<bool> _createZohoDeal() async {
+    try {
+      final body = _buildZohoDealPayload();
+
+      body['paymentSessionId'] = _currentPaymentSessionId ?? '';
 
       debugPrint('🟡 Creating Zoho deal / AWS booking...');
       debugPrint('🟡 Zoho deal payload: $body');
@@ -464,6 +606,8 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
       _isPaying = true;
       _isCheckoutOpening = true;
     });
+
+    _currentPaymentSessionId = null;
 
     try {
       final recommendation = _recommendation!;
@@ -530,6 +674,10 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
         return;
       }
 
+      final bookingPayload = _buildZohoDealPayload();
+
+      debugPrint('🟡 Booking payload prepared before payment session: $bookingPayload');
+
       final sessionResponse = await BookingService.createZohoPaymentSession(
         userId: widget.userId,
         amount: amount,
@@ -544,7 +692,17 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
           'flow': 'recommendation_plan_payment',
           'visitId': paymentVisitId,
         },
+        bookingPayload: bookingPayload,
+      ).timeout(
+        const Duration(seconds: 25),
+        onTimeout: () {
+          throw Exception(
+            'Payment session creation timed out. Please try again.',
+          );
+        },
       );
+
+      debugPrint('✅ Payment session response received: $sessionResponse');
 
       final paymentSessionId =
           sessionResponse['payment_session_id']?.toString() ??
@@ -592,7 +750,8 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
       debugPrint('🟡 amount: $amount');
       debugPrint('🟡 customerPhone: $customerPhone');
 
-      final result = await _zohoSdk.showCheckout(
+      final result = await _zohoSdk
+          .showCheckout(
         options,
         domain: ZohoPaymentsDomain.india,
         environment: ZohoPaymentsEnvironment.live,
@@ -639,10 +798,18 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
             message: result.message,
           );
           break;
+
+        default:
+          debugPrint('⚠️ Unknown Zoho payment result: $result');
+          await _tryRecoverPaymentNow();
       }
     } catch (e, stackTrace) {
       debugPrint('❌ Error initiating payment: $e');
       debugPrint('❌ StackTrace: $stackTrace');
+      if ((_currentPaymentSessionId ?? '').isNotEmpty) {
+        await _tryRecoverPaymentNow();
+        return;
+      }
 
       if (!mounted) return;
 
@@ -703,11 +870,21 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
         });
       }
 
-      debugPrint('✅ Payment verified. Calling _createZohoDeal now...');
+      debugPrint('✅ Payment verified. Calling zohoPaymentRecoveryFinalize now...');
 
-      final isZohoSuccess = await _createZohoDeal();
+      final finalizeResponse = await BookingService.finalizeZohoPaymentRecovery(
+        paymentSessionId: _currentPaymentSessionId ?? '',
+        paymentId: paymentId,
+        signature: signature,
+      );
 
-      debugPrint('✅ _createZohoDeal result: $isZohoSuccess');
+      debugPrint('✅ zohoPaymentRecoveryFinalize response: $finalizeResponse');
+
+      final isZohoSuccess = finalizeResponse['success'] == true ||
+          finalizeResponse['bookingStatus'] == 'BOOKING_CREATED' ||
+          finalizeResponse['alreadyCreated'] == true;
+
+      debugPrint('✅ Final booking creation result: $isZohoSuccess');
 
       if (isZohoSuccess) {
         await _clearPendingPaymentLocally();
