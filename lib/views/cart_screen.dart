@@ -87,9 +87,78 @@ class _CartScreenState extends State<CartScreen> {
     return '${weekdays[date.weekday - 1]}, ${months[date.month - 1]} ${date.day}';
   }
 
+  DateTime? _parseVisitDate(String dateStr) {
+    try {
+      final parts = dateStr.split('-');
+      if (parts.length != 3) return null;
+
+      final day = int.parse(parts[0]);
+      final month = int.parse(parts[1]);
+      final yearRaw = int.parse(parts[2]);
+      final year = parts[2].length == 2 ? 2000 + yearRaw : yearRaw;
+
+      return DateTime(year, month, day);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  DateTime? _getProductOrderingCutoff() {
+    final visitDate = _parseVisitDate(widget.date);
+    if (visitDate == null) return null;
+
+    final previousDay = visitDate.subtract(const Duration(days: 1));
+
+    return DateTime(
+      previousDay.year,
+      previousDay.month,
+      previousDay.day,
+      15,
+      30,
+    );
+  }
+
+  bool _isOrderingOpen() {
+    final cutoff = _getProductOrderingCutoff();
+
+    if (cutoff == null) {
+      return false;
+    }
+
+    return DateTime.now().isBefore(cutoff);
+  }
+
+  String _getOrderingClosedMessage() {
+    final cutoff = _getProductOrderingCutoff();
+
+    if (cutoff == null) {
+      return 'Ordering window for this visit is closed.';
+    }
+
+    final dateText =
+        '${cutoff.day.toString().padLeft(2, '0')}-${cutoff.month.toString().padLeft(2, '0')}-${cutoff.year}';
+
+    return 'Ordering window closed on $dateText at 3:30 PM. You can add products for your next eligible visit.';
+  }
+
+  void _showOrderingClosedMessage() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(_getOrderingClosedMessage()),
+        backgroundColor: Colors.red,
+      ),
+    );
+  }
+
   void _updateQuantity(int index, int delta) {
+    if (delta > 0 && !_isOrderingOpen()) {
+      _showOrderingClosedMessage();
+      return;
+    }
+
     setState(() {
-      final currentQty = int.tryParse((localCart[index]['quantity'] ?? 1).toString()) ?? 1;
+      final currentQty =
+          int.tryParse((localCart[index]['quantity'] ?? 1).toString()) ?? 1;
       final newQty = currentQty + delta;
 
       if (newQty > 0) {
@@ -110,6 +179,11 @@ class _CartScreenState extends State<CartScreen> {
           backgroundColor: Colors.orange,
         ),
       );
+      return;
+    }
+
+    if (!_isOrderingOpen()) {
+      _showOrderingClosedMessage();
       return;
     }
 

@@ -9,6 +9,7 @@ import '../app/app_text_styles.dart';
 import '../services/booking_service.dart';
 import '../widgets/liquid_glass_instruction_card.dart';
 import 'terms_of_service_screen.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 class ProfileScreen extends StatefulWidget {
   final String userId;
@@ -42,11 +43,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   String _userName = 'User';
   String _phoneNumber = '';
+  String _appVersionText = '';
 
   @override
   void initState() {
     super.initState();
     _loadProfileData();
+    _loadAppVersion();
   }
 
   Future<void> _loadProfileData() async {
@@ -101,6 +104,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
         _userName = 'User';
         _isLoading = false;
       });
+    }
+  }
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final packageInfo = await PackageInfo.fromPlatform();
+
+      if (!mounted) return;
+
+      setState(() {
+        _appVersionText =
+        'Version ${packageInfo.version} (${packageInfo.buildNumber})';
+      });
+    } catch (e) {
+      debugPrint('❌ App version load error: $e');
     }
   }
 
@@ -392,15 +410,31 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ],
                 ),
                 const SizedBox(height: 24),
-                Text(
-                  'GOLD DUST GARDENING',
-                  textAlign: TextAlign.center,
-                  style: AppTextStyles.caption.copyWith(
-                    fontSize: 10,
-                    letterSpacing: 1.1,
-                    fontWeight: FontWeight.w800,
-                    color: AppColors.textSecondary,
-                  ),
+                Column(
+                  children: [
+                    Text(
+                      'GOLD DUST GARDENING',
+                      textAlign: TextAlign.center,
+                      style: AppTextStyles.caption.copyWith(
+                        fontSize: 10,
+                        letterSpacing: 1.1,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                    if (_appVersionText.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        _appVersionText,
+                        textAlign: TextAlign.center,
+                        style: AppTextStyles.caption.copyWith(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textSecondary.withOpacity(0.75),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
               ],
             ),

@@ -403,7 +403,42 @@ class _AddProductsForNextVisitScreenState
     return int.tryParse((_cart[index]['quantity'] ?? 0).toString()) ?? 0;
   }
 
+  bool _isOrderingOpen() {
+    final cutoff = _getProductOrderingCutoff();
+
+    if (cutoff == null) {
+      return false;
+    }
+
+    return DateTime.now().isBefore(cutoff);
+  }
+
+  void _showOrderingClosedMessage() {
+    final cutoff = _getProductOrderingCutoff();
+
+    String message = 'Ordering window for this visit is closed.';
+
+    if (cutoff != null) {
+      final dateText =
+          '${cutoff.day.toString().padLeft(2, '0')}-${cutoff.month.toString().padLeft(2, '0')}-${cutoff.year}';
+      message =
+      'Ordering window closed on $dateText at 3:30 PM. You can add products for your next eligible visit.';
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+      ),
+    );
+  }
+
   void _updateQty(Map<String, dynamic> product, int delta) {
+    if (!_isOrderingOpen()) {
+      _showOrderingClosedMessage();
+      return;
+    }
+
     setState(() {
       final index = _cart.indexWhere((e) => e['skuID'] == product['skuID']);
 
@@ -426,6 +461,11 @@ class _AddProductsForNextVisitScreenState
   }
 
   Future<void> _openCart() async {
+    if (!_isOrderingOpen()) {
+      _showOrderingClosedMessage();
+      return;
+    }
+
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
