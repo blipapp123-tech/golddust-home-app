@@ -277,10 +277,109 @@ class _ConfirmLocationMapScreenState extends State<ConfirmLocationMapScreen> {
     return parts.join(', ');
   }
 
-  bool _isServiceAvailableInNoida() {
-    final text = '$_locationTitle $_locationLine'.toLowerCase();
+  String _normalizeLocationText(String value) {
+    return value
+        .toLowerCase()
+        .replaceAll(RegExp(r'[\-_/,.]+'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
 
-    // First block locations where you do NOT serve.
+  bool _containsAllowedNoidaSector(String text) {
+    final normalizedText = _normalizeLocationText(text);
+
+    final allowedBaseSectors = <String>{
+      '29',
+      '39',
+      '44',
+      '45',
+      '46',
+      '47',
+      '48',
+      '49',
+      '50',
+      '76',
+      '77',
+      '79',
+      '80',
+      '81',
+      '82',
+      '83',
+      '86',
+      '87',
+      '88',
+      '90',
+      '92',
+      '93',
+      '94',
+      '96',
+      '98',
+      '99',
+      '100',
+      '101',
+      '104',
+      '105',
+      '107',
+      '108',
+      '110',
+      '115',
+      '117',
+      '119',
+      '120',
+      '127',
+      '128',
+      '129',
+      '131',
+      '132',
+      '133',
+      '134',
+      '135',
+      '136',
+      '137',
+      '140',
+      '142',
+      '143',
+      '144',
+      '163',
+      '168',
+    };
+
+    for (final sector in allowedBaseSectors) {
+      final patterns = [
+        // Sector 137, Sector-137, Sector 137A, Sector 137 B, Sector-137-C
+        RegExp(r'\bsector\s+' + RegExp.escape(sector) + r'\s*[a-z]?\b'),
+
+        // Sec 137, Sec 137A, Sec 137 B
+        RegExp(r'\bsec\s+' + RegExp.escape(sector) + r'\s*[a-z]?\b'),
+
+        // Sector 137 Block A / Sector 137 Extension / Sector 137 Pocket A
+        RegExp(
+          r'\bsector\s+' +
+              RegExp.escape(sector) +
+              r'\s+(block|pocket|extension|ext|part|phase)\s*[a-z0-9]*\b',
+        ),
+
+        // Sec 137 Block A / Sec 137 Extension
+        RegExp(
+          r'\bsec\s+' +
+              RegExp.escape(sector) +
+              r'\s+(block|pocket|extension|ext|part|phase)\s*[a-z0-9]*\b',
+        ),
+      ];
+
+      for (final pattern in patterns) {
+        if (pattern.hasMatch(normalizedText)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  bool _isServiceAvailableInNoida() {
+    final text = _normalizeLocationText('$_locationTitle $_locationLine');
+
     final blockedLocations = [
       'greater noida',
       'greaternoida',
@@ -298,19 +397,14 @@ class _ConfirmLocationMapScreenState extends State<ConfirmLocationMapScreen> {
       }
     }
 
-    // Then allow only proper Noida.
-    final allowedLocations = [
-      'noida',
-      'gautam buddha nagar',
-    ];
+    final isNoida =
+        text.contains('noida') || text.contains('gautam buddha nagar');
 
-    for (final allowed in allowedLocations) {
-      if (text.contains(allowed)) {
-        return true;
-      }
+    if (!isNoida) {
+      return false;
     }
 
-    return false;
+    return _containsAllowedNoidaSector(text);
   }
 
   void _confirmLocation() {
@@ -332,7 +426,7 @@ class _ConfirmLocationMapScreenState extends State<ConfirmLocationMapScreen> {
         'locationLine': _locationLine,
         'locationMessage': isServiceAvailable
             ? 'Service available in your area'
-            : 'Currently not available in your location',
+            : 'We currently serve selected sectors of Noida only.',
         'latitude': selected.latitude,
         'longitude': selected.longitude,
       },
