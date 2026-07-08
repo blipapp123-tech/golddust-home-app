@@ -98,6 +98,16 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
     super.dispose();
   }
 
+  List<Map<String, dynamic>> _copyCartItems(List<Map<String, dynamic>> items) {
+    return items
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
+  }
+
+  void _syncCartToParent() {
+    widget.onCartUpdated(_copyCartItems(_cart));
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
@@ -1372,7 +1382,9 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
 
     if (bookingDate.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No upcoming visit found for adding products.')),
+        const SnackBar(
+          content: Text('No upcoming visit found for adding products.'),
+        ),
       );
       return;
     }
@@ -1389,25 +1401,61 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
       return;
     }
 
-    await Navigator.push(
+    final result = await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => AddProductsForNextVisitScreen(
           userID: widget.userId,
-          bookingID: widget.booking['bookingID'] ?? '',
+          bookingID: (widget.booking['bookingID'] ?? '').toString(),
           visitDate: bookingDate,
-          cartItems: _cart,
+          cartItems: _copyCartItems(_cart),
           fetchCatalogUrl: widget.fetchCatalogUrl,
           assignedMali: widget.booking['assignedMali']?.toString() ?? '',
           onCartUpdated: (updatedCart) {
-            setState(() {
-              _cart = List<Map<String, dynamic>>.from(updatedCart);
-            });
-            widget.onCartUpdated(updatedCart);
+            final copiedCart = _copyCartItems(updatedCart);
+
+            if (mounted) {
+              setState(() {
+                _cart = copiedCart;
+              });
+            }
+
+            widget.onCartUpdated(copiedCart);
           },
         ),
       ),
     );
+
+    if (!mounted) return;
+
+    if (result is Map && result['orderConfirmed'] == true) {
+      setState(() {
+        _cart = [];
+      });
+
+      _syncCartToParent();
+      return;
+    }
+
+    if (result is Map && result['cartItems'] != null) {
+      final updatedCart = List<Map<String, dynamic>>.from(result['cartItems']);
+
+      setState(() {
+        _cart = _copyCartItems(updatedCart);
+      });
+
+      _syncCartToParent();
+      return;
+    }
+
+    // Backward compatibility with older AddProducts/CartScreen versions.
+    if (result == true) {
+      setState(() {
+        _cart = [];
+      });
+
+      _syncCartToParent();
+    }
   }
 
   Future<void> _cancelPlan() async {
@@ -3015,7 +3063,7 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
     );
   }
 
- /* Widget _viewOrdersButton() {
+  /* Widget _viewOrdersButton() {
     return TextButton.icon(
       onPressed: _openOrdersScreen,
       icon: const Icon(Icons.receipt_long_outlined, size: 18),
@@ -3041,62 +3089,67 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
 
     final isPlanExpired = _isPlanExpired(visits);
 
-    return Scaffold(
-      backgroundColor: _softBg,
-      appBar: AppBar(
+    return PopScope(
+      canPop: true,
+      onPopInvokedWithResult: (didPop, result) {
+        _syncCartToParent();
+      },
+      child: Scaffold(
         backgroundColor: _softBg,
-        elevation: 0,
-        foregroundColor: AppColors.textPrimary,
-        title: Text(
-          'Subscription Details',
-          style: AppTextStyles.cardTitle.copyWith(
-            color: AppColors.textPrimary,
+        appBar: AppBar(
+          backgroundColor: _softBg,
+          elevation: 0,
+          foregroundColor: AppColors.textPrimary,
+          title: Text(
+            'Subscription Details',
+            style: AppTextStyles.cardTitle.copyWith(
+              color: AppColors.textPrimary,
+            ),
           ),
         ),
-      ),
-      body: RefreshIndicator(
-        onRefresh: _refreshScreenData,
-        color: AppColors.primaryColor,
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(18, 8, 18, 24),
-          children: [
-            _currentPlanCard(
-              planName: planName,
-              status: status,
-              upcomingVisit: selectedVisit,
-              visits: visits,
-              isExpired: isPlanExpired,
-            ),
-            _pendingPaymentWidget(),
-            const SizedBox(height: 24),
-            Text(
-              isPlanExpired ? 'Completed Visits' : 'Upcoming Visit',
-              style: AppTextStyles.sectionTitle.copyWith(
-                fontWeight: FontWeight.w500,
-                color: _darkGreen,
+        body: RefreshIndicator(
+          onRefresh: _refreshScreenData,
+          color: AppColors.primaryColor,
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(18, 8, 18, 24),
+            children: [
+              _currentPlanCard(
+                planName: planName,
+                status: status,
+                upcomingVisit: selectedVisit,
+                visits: visits,
+                isExpired: isPlanExpired,
               ),
-            ),
-            const SizedBox(height: 14),
-            _upcomingVisitsSection(visits),
-            const SizedBox(height: 18),
-            if (!isPlanExpired) ...[
-              _actionButtons(selectedVisit),
+              _pendingPaymentWidget(),
+              const SizedBox(height: 24),
+              Text(
+                isPlanExpired ? 'Completed Visits' : 'Upcoming Visit',
+                style: AppTextStyles.sectionTitle.copyWith(
+                  fontWeight: FontWeight.w500,
+                  color: _darkGreen,
+                ),
+              ),
+              const SizedBox(height: 14),
+              _upcomingVisitsSection(visits),
               const SizedBox(height: 18),
-            ],
-            _assignedExpertCard(assignedMali),
-            const SizedBox(height: 22),
-            if (isPlanExpired) ...[
-              _expiredPlanActionsCard(visits),
-            ] else ...[
-              _enhanceNextVisitHeader(bookingDate),
-              const SizedBox(height: 16),
-              _recommendedProductsPreview(),
-              const SizedBox(height: 8),
-              /*Align(
+              if (!isPlanExpired) ...[
+                _actionButtons(selectedVisit),
+                const SizedBox(height: 18),
+              ],
+              _assignedExpertCard(assignedMali),
+              const SizedBox(height: 22),
+              if (isPlanExpired) ...[
+                _expiredPlanActionsCard(visits),
+              ] else ...[
+                _enhanceNextVisitHeader(bookingDate),
+                const SizedBox(height: 16),
+                _recommendedProductsPreview(),
+                const SizedBox(height: 8),
+                /*Align(
                 alignment: Alignment.centerLeft,
                 child: _viewOrdersButton(),
               ),*/
-              /*const SizedBox(height: 18),
+                /*const SizedBox(height: 18),
               if (selectedVisit != null &&
                   selectedVisit['isFuture'] == true &&
                   selectedVisit['date'] != null)
@@ -3117,9 +3170,10 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
                     ),
                   ),
                 ),*/
+              ],
+              const SizedBox(height: 18),
             ],
-            const SizedBox(height: 18),
-          ],
+          ),
         ),
       ),
     );

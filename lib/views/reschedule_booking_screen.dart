@@ -40,7 +40,70 @@
     String? _errorMessage;
     final Map<String, Map<String, List<Map<String, dynamic>>>> _slotsCache = {};
     int _slotRequestId = 0;
-  
+
+    void _rescheduleDebug(String message, [Object? data]) {
+      try {
+        if (data == null) {
+          debugPrint('🧪 [RescheduleBooking] $message');
+        } else {
+          debugPrint(
+            '🧪 [RescheduleBooking] $message: '
+                '${const JsonEncoder.withIndent('  ').convert(data)}',
+          );
+        }
+      } catch (_) {
+        debugPrint('🧪 [RescheduleBooking] $message: $data');
+      }
+    }
+
+    String _maskedUserId(String value) {
+      final clean = value.trim();
+      if (clean.length <= 4) return '***';
+      return '${clean.substring(0, 3)}***${clean.substring(clean.length - 4)}';
+    }
+
+    String _possibleCrmTaskId() {
+      final value = widget.booking['taskID'] ??
+          widget.booking['taskId'] ??
+          widget.booking['crmTaskID'] ??
+          widget.booking['crmTaskId'] ??
+          widget.booking['CRM_Task_ID'] ??
+          widget.booking['zohoTaskId'] ??
+          widget.booking['zohoCRMTaskId'] ??
+          '';
+
+      return value.toString().trim();
+    }
+
+    Map<String, dynamic> _bookingDebugSnapshot() {
+      return {
+        'userIdMasked': _maskedUserId(widget.userId),
+        'oldDate': widget.oldDate,
+        'assignedMaliIdFromWidget': widget.assignedMaliId,
+        'assignedMaliNameFromBooking': _assignedMaliName(),
+        'currentTimeFromBooking': _currentTimeText(),
+        'possibleCrmTaskId': _possibleCrmTaskId().isEmpty
+            ? 'MISSING'
+            : _possibleCrmTaskId(),
+        'bookingKeys': widget.booking.keys.map((key) => key.toString()).toList(),
+        'importantBookingFields': {
+          'taskID': widget.booking['taskID'],
+          'taskId': widget.booking['taskId'],
+          'crmTaskID': widget.booking['crmTaskID'],
+          'crmTaskId': widget.booking['crmTaskId'],
+          'dueDate': widget.booking['dueDate'],
+          'date': widget.booking['date'],
+          'assignedMali': widget.booking['assignedMali'],
+          'maaliName': widget.booking['maaliName'],
+          'assignedMaali': widget.booking['assignedMaali'],
+          'visitTimeSlot1': widget.booking['visitTimeSlot1'],
+          'timeSlot': widget.booking['timeSlot'],
+          'timeOfVisit': widget.booking['timeOfVisit'],
+          'dayTimeSlots': widget.booking['dayTimeSlots'],
+        },
+      };
+    }
+
     static const String _availabilityTrackerUrl =
         'https://s02o6t55vf.execute-api.ap-south-1.amazonaws.com/fetchAvailabilityTracker';
   
@@ -133,7 +196,16 @@
       }
   
       _selectedDate = _rescheduleDateOptions.first;
-  
+      _rescheduleDebug('Screen opened with booking snapshot', _bookingDebugSnapshot());
+
+      _rescheduleDebug('Generated reschedule date options', {
+        'today': _formatDateForApi(todayOnly),
+        'oldVisitDate': _formatDateForApi(oldVisitDateOnly),
+        'dateRangeStart': _formatDateForApi(startDate),
+        'dateRangeEnd': _formatDateForApi(endDate),
+        'selectedDefaultDate': _formatDateForApi(_selectedDate!),
+        'options': _rescheduleDateOptions.map(_formatDateForApi).toList(),
+      });
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (_selectedDate != null) {
           _fetchAvailableSlots(_selectedDate!);
@@ -308,7 +380,11 @@
       if (!mounted) return;
 
       final selectedDateForApi = _formatDateForApi(date);
-
+      _rescheduleDebug('Fetching slots started', {
+        'selectedDateForApi': selectedDateForApi,
+        'assignedMaliId': widget.assignedMaliId,
+        'assignedMaliName': _assignedMaliName(),
+      });
       // Important: cache by exact date, not weekday.
       final cacheKey = selectedDateForApi;
 
@@ -346,7 +422,7 @@
           "assignedMaliName": assignedMaliName,
         };
 
-        debugPrint('🔎 Fetch reschedule slots payload: ${jsonEncode(payload)}');
+        _rescheduleDebug('Fetch slots payload', payload);
 
         final slotsResponse = await http.post(
           Uri.parse(_rescheduleUrl),
@@ -356,11 +432,13 @@
 
         if (requestId != _slotRequestId) return;
 
-        debugPrint('📥 Slots response status: ${slotsResponse.statusCode}');
-        debugPrint('📥 Slots response body: ${slotsResponse.body}');
+        _rescheduleDebug('Fetch slots raw response', {
+          'statusCode': slotsResponse.statusCode,
+          'body': slotsResponse.body,
+        });
 
         final responseData = _decodeApiResponse(slotsResponse.body);
-
+        _rescheduleDebug('Fetch slots decoded response', responseData);
         if (slotsResponse.statusCode != 200 || responseData['success'] != true) {
           throw Exception(
             responseData['message']?.toString() ??
@@ -428,7 +506,13 @@
 
         final sortedAssigned = _sortSlots(assignedSlots);
         final sortedOther = _sortSlots(otherSlots);
-
+        _rescheduleDebug('Slots parsed for UI', {
+          'date': selectedDateForApi,
+          'assignedSlotsCount': sortedAssigned.length,
+          'otherSlotsCount': sortedOther.length,
+          'assignedSlots': sortedAssigned,
+          'otherSlots': sortedOther,
+        });
         _slotsCache[cacheKey] = {
           'assigned': sortedAssigned,
           'other': sortedOther,
@@ -441,7 +525,10 @@
           _otherMaliSlots = sortedOther;
         });
       } catch (e) {
-        debugPrint('❌ Reschedule slots fetch error: $e');
+        _rescheduleDebug('Fetch slots error', {
+          'error': e.toString(),
+          'date': selectedDateForApi,
+        });
 
         if (!mounted) return;
 
@@ -491,7 +578,17 @@
         final oldDateStr = widget.oldDate;
         final newDateStr = _formatDateForApi(_selectedDate!);
         final visitDay = _dayName(_selectedDate!);
-  
+        final possibleCrmTaskId = _possibleCrmTaskId();
+
+        _rescheduleDebug('Submit started', {
+          'oldDate': oldDateStr,
+          'newDate': newDateStr,
+          'newTime': _selectedTimeSlot,
+          'visitDay1': visitDay,
+          'possibleCrmTaskId': possibleCrmTaskId.isEmpty ? 'MISSING' : possibleCrmTaskId,
+          'selectedSlot': _selectedSlot,
+          'bookingSnapshot': _bookingDebugSnapshot(),
+        });
         final isAssignedMaali = _selectedSlot!['isAssignedMaali'] == true;
   
         final selectedMaaliId = (_selectedSlot!['maaliId'] ?? '')

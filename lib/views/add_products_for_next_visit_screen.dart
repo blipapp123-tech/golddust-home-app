@@ -91,6 +91,16 @@ class _AddProductsForNextVisitScreenState
     super.dispose();
   }
 
+  List<Map<String, dynamic>> _copyCartItems(List<Map<String, dynamic>> items) {
+    return items
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
+  }
+
+  void _syncCartToParent() {
+    widget.onCartUpdated(_copyCartItems(_cart));
+  }
+
   int _sortByTitle(Map<String, dynamic> a, Map<String, dynamic> b) {
     final t1 = (a['title'] ?? '').toString().toLowerCase();
     final t2 = (b['title'] ?? '').toString().toLowerCase();
@@ -457,7 +467,7 @@ class _AddProductsForNextVisitScreenState
       }
     });
 
-    widget.onCartUpdated(List<Map<String, dynamic>>.from(_cart));
+    _syncCartToParent();
   }
 
   Future<void> _openCart() async {
@@ -470,22 +480,60 @@ class _AddProductsForNextVisitScreenState
       context,
       MaterialPageRoute(
         builder: (_) => CartScreen(
-          cartItems: _cart,
+          cartItems: _copyCartItems(_cart),
           bookingID: widget.bookingID,
           userID: widget.userID,
           date: widget.visitDate,
           assignedMali: widget.assignedMali,
           onCartUpdated: (updatedCart) {
-            setState(() {
-              _cart = List<Map<String, dynamic>>.from(updatedCart);
-            });
-            widget.onCartUpdated(List<Map<String, dynamic>>.from(updatedCart));
+            final copiedCart = _copyCartItems(updatedCart);
+
+            if (mounted) {
+              setState(() {
+                _cart = copiedCart;
+              });
+            }
+
+            widget.onCartUpdated(copiedCart);
           },
         ),
       ),
     );
 
-    if (result == true && mounted) {
+    if (!mounted) return;
+
+    if (result is Map && result['orderConfirmed'] == true) {
+      setState(() {
+        _cart = [];
+      });
+
+      _syncCartToParent();
+
+      Navigator.pop(context, {
+        'orderConfirmed': true,
+        'cartItems': <Map<String, dynamic>>[],
+      });
+      return;
+    }
+
+    if (result is Map && result['cartItems'] != null) {
+      final updatedCart = List<Map<String, dynamic>>.from(result['cartItems']);
+
+      setState(() {
+        _cart = _copyCartItems(updatedCart);
+      });
+
+      _syncCartToParent();
+      return;
+    }
+
+    // Backward compatibility with older CartScreen versions.
+    if (result == true) {
+      setState(() {
+        _cart = [];
+      });
+
+      _syncCartToParent();
       Navigator.pop(context, true);
     }
   }
@@ -1018,132 +1066,138 @@ class _AddProductsForNextVisitScreenState
       sum + (int.tryParse((item['quantity'] ?? 0).toString()) ?? 0),
     );
 
-    return Scaffold(
-      backgroundColor: Colors.white,
-      appBar: AppBar(
+    return PopScope(
+      canPop: true,
+      onPopInvokedWithResult: (didPop, result) {
+        _syncCartToParent();
+      },
+      child: Scaffold(
         backgroundColor: Colors.white,
-        elevation: 0,
-        toolbarHeight: 64,
-        foregroundColor: AppColors.textPrimary,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
+        appBar: AppBar(
+          backgroundColor: Colors.white,
+          elevation: 0,
+          toolbarHeight: 64,
+          foregroundColor: AppColors.textPrimary,
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Enhance Your Next Visit',
+                style: AppTextStyles.cardTitle.copyWith(
+                  color: AppColors.textPrimary,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.timer_outlined,
+                    size: 12,
+                    color: AppColors.textSecondary,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    _getProductOrderingCountdown(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTextStyles.caption.copyWith(
+                      fontSize: 10.5,
+                      color: AppColors.textSecondary,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            _cartButton(cartCount),
+          ],
+        ),
+        body: Column(
           children: [
-            Text(
-              'Enhance Your Next Visit',
-              style: AppTextStyles.cardTitle.copyWith(
-                color: AppColors.textPrimary,
-                fontWeight: FontWeight.w700,
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 0, 18, 8),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(child: _searchBar()),
+                      const SizedBox(width: 12),
+                      _sortByPriceButton(),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  _categoryBar(),
+                  if (_showSubcategories && _subcategories.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    _subcategoryBar(),
+                  ],
+                ],
               ),
             ),
-            const SizedBox(height: 2),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(
-                  Icons.timer_outlined,
-                  size: 12,
-                  color: AppColors.textSecondary,
+            Expanded(
+              child: _isLoading
+                  ? _buildProductLoadingSkeleton()
+                  : _filteredProducts.isEmpty
+                  ? _emptyProductsState()
+                  : GridView.builder(
+                padding: const EdgeInsets.fromLTRB(18, 8, 18, 24),
+                itemCount: _filteredProducts.length,
+                gridDelegate:
+                const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  mainAxisSpacing: 14,
+                  crossAxisSpacing: 14,
+                  childAspectRatio: 0.65,
                 ),
-                const SizedBox(width: 4),
-                Text(
-                  _getProductOrderingCountdown(),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppTextStyles.caption.copyWith(
-                    fontSize: 10.5,
-                    color: AppColors.textSecondary,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
+                itemBuilder: (_, index) {
+                  final product = _filteredProducts[index];
+                  final qty = _qtyOf(product['skuID'] ?? '');
+
+                  return _ProductTile(
+                    product: product,
+                    qty: qty,
+                    onAdd: () => _updateQty(product, 1),
+                    onRemove: () => _updateQty(product, -1),
+                    onImageTap: () => _openImagePreview(product),
+                  );
+                },
+              ),
             ),
           ],
         ),
-        actions: [
-          _cartButton(cartCount),
-        ],
-      ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(18, 0, 18, 8),
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    Expanded(child: _searchBar()),
-                    const SizedBox(width: 12),
-                    _sortByPriceButton(),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                _categoryBar(),
-                if (_showSubcategories && _subcategories.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  _subcategoryBar(),
-                ],
-              ],
-            ),
-          ),
-          Expanded(
-            child: _isLoading
-                ? _buildProductLoadingSkeleton()
-                : _filteredProducts.isEmpty
-                ? _emptyProductsState()
-                : GridView.builder(
-              padding: const EdgeInsets.fromLTRB(18, 8, 18, 24),
-              itemCount: _filteredProducts.length,
-              gridDelegate:
-              const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                mainAxisSpacing: 14,
-                crossAxisSpacing: 14,
-                childAspectRatio: 0.65,
-              ),
-              itemBuilder: (_, index) {
-                final product = _filteredProducts[index];
-                final qty = _qtyOf(product['skuID'] ?? '');
-
-                return _ProductTile(
-                  product: product,
-                  qty: qty,
-                  onAdd: () => _updateQty(product, 1),
-                  onRemove: () => _updateQty(product, -1),
-                  onImageTap: () => _openImagePreview(product),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-      bottomNavigationBar: cartCount == 0
-          ? null
-          : SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-          child: LiquidGlassInstructionCard(
-            radius: 28,
-            minHeight: 66,
-            padding: const EdgeInsets.all(7),
-            child: SizedBox(
-              height: 52,
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: _openCart,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _gold,
-                  foregroundColor: Colors.black,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(26),
+        bottomNavigationBar: cartCount == 0
+            ? null
+            : SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+            child: LiquidGlassInstructionCard(
+              radius: 28,
+              minHeight: 66,
+              padding: const EdgeInsets.all(7),
+              child: SizedBox(
+                height: 52,
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _openCart,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _gold,
+                    foregroundColor: Colors.black,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(26),
+                    ),
                   ),
-                ),
-                child: Text(
-                  'View Cart ($cartCount)',
-                  style: AppTextStyles.bodyLarge.copyWith(
-                    color: Colors.black,
-                    fontWeight: FontWeight.w900,
+                  child: Text(
+                    'View Cart ($cartCount)',
+                    style: AppTextStyles.bodyLarge.copyWith(
+                      color: Colors.black,
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
                 ),
               ),

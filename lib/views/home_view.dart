@@ -55,8 +55,10 @@ class _HomeViewState extends State<HomeView> {
   String _resolvedUserId = '';
   static const String _cachedActiveBookingKey = 'cached_active_booking';
   static const String _cachedPendingExpertVisitKey = 'cached_pending_expert_visit';
+  static const String _savedProductCartKeyPrefix = 'saved_product_cart';
   final GlobalKey _plansSectionKey = GlobalKey();
   int _selectedNavIndex = 0;
+  List<Map<String, dynamic>> _cartItems = [];
   late final ScrollController _transformScrollController;
   final TextEditingController _locationSearchController = TextEditingController();
   Timer? _locationSearchDebounce;
@@ -122,6 +124,118 @@ class _HomeViewState extends State<HomeView> {
     _transformScrollController.dispose();
     _transformVideoController.dispose();
     super.dispose();
+  }
+
+  Future<String> _getCartStorageKey() async {
+    final resolvedUserId = _resolvedUserId.isNotEmpty
+        ? _resolvedUserId
+        : await _resolveUserId();
+
+    String bookingId = '';
+
+    if (_activeBooking != null) {
+      final booking = _normalizeBookingForSubscriptionDetails(_activeBooking!);
+
+      bookingId = (booking['bookingID'] ??
+          booking['bookingId'] ??
+          booking['id'] ??
+          booking['visitID'] ??
+          '')
+          .toString()
+          .trim();
+    }
+
+    final userKey = resolvedUserId.trim().isNotEmpty
+        ? resolvedUserId.trim()
+        : widget.userId.trim();
+
+    return '${_savedProductCartKeyPrefix}_${userKey}_$bookingId';
+  }
+
+  Future<void> _loadSavedCartItems() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final key = await _getCartStorageKey();
+
+      final savedCartJson = prefs.getString(key);
+
+      if (savedCartJson == null || savedCartJson.trim().isEmpty) {
+        return;
+      }
+
+      final decoded = jsonDecode(savedCartJson);
+
+      if (decoded is! List) {
+        return;
+      }
+
+      final restoredCart = decoded
+          .whereType<Map>()
+          .map((item) => Map<String, dynamic>.from(item))
+          .toList();
+
+      if (!mounted) return;
+
+      setState(() {
+        _cartItems = restoredCart;
+      });
+
+      debugPrint('🛒 Restored saved cart: ${_cartItems.length} items');
+    } catch (e) {
+      debugPrint('❌ Failed to load saved cart: $e');
+    }
+  }
+
+  Future<void> _saveCartItemsToStorage(
+      List<Map<String, dynamic>> cartItems,
+      ) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final key = await _getCartStorageKey();
+
+      final copiedCart = cartItems
+          .map((item) => Map<String, dynamic>.from(item))
+          .toList();
+
+      await prefs.setString(key, jsonEncode(copiedCart));
+
+      debugPrint('🛒 Saved cart: ${copiedCart.length} items');
+    } catch (e) {
+      debugPrint('❌ Failed to save cart: $e');
+    }
+  }
+
+  Future<void> _clearSavedCartItems() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final key = await _getCartStorageKey();
+
+      await prefs.remove(key);
+
+      if (!mounted) return;
+
+      setState(() {
+        _cartItems = [];
+      });
+
+      debugPrint('🛒 Cart cleared');
+    } catch (e) {
+      debugPrint('❌ Failed to clear cart: $e');
+    }
+  }
+
+  void _updateCartItems(List<Map<String, dynamic>> updatedCart) {
+    final copiedCart = updatedCart
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
+
+    if (!mounted) return;
+
+    setState(() {
+      _cartItems = copiedCart;
+    });
+
+    _saveCartItemsToStorage(copiedCart);
   }
 
   Future<String> _resolveUserId() async {
@@ -414,11 +528,29 @@ class _HomeViewState extends State<HomeView> {
             assignedMali: (booking['assignedMali'] ?? '').toString(),
             fetchCatalogUrl:
             'https://18hkwgpuo1.execute-api.ap-south-1.amazonaws.com/zohoInventoryFetch',
-            cartItems: const [],
-            onCartUpdated: (_) {},
+            cartItems: _cartItems,
+            onCartUpdated: _updateCartItems,
           ),
         ),
-      );
+      ).then((result) {
+        if (!mounted) return;
+
+        if (result is Map && result['orderConfirmed'] == true) {
+          _clearSavedCartItems();
+          return;
+        }
+
+        if (result is Map && result['cartItems'] != null) {
+          _updateCartItems(
+            List<Map<String, dynamic>>.from(result['cartItems']),
+          );
+          return;
+        }
+
+        if (result == true) {
+          _clearSavedCartItems();
+        }
+      });
       return;
     }
 
@@ -470,6 +602,8 @@ class _HomeViewState extends State<HomeView> {
           _activeBooking = Map<String, dynamic>.from(decoded);
           hasActivePlan = true;
         });
+
+        await _loadSavedCartItems();
       }
     }
 
@@ -801,6 +935,15 @@ class _HomeViewState extends State<HomeView> {
 
       await prefs.remove(_cachedActiveBookingKey);
       await prefs.remove(_cachedPendingExpertVisitKey);
+
+      final savedCartKeys = prefs
+          .getKeys()
+          .where((key) => key.startsWith(_savedProductCartKeyPrefix))
+          .toList();
+
+      for (final key in savedCartKeys) {
+        await prefs.remove(key);
+      }
 
       if (!mounted) return;
 
@@ -1206,6 +1349,14 @@ class _HomeViewState extends State<HomeView> {
         activeBooking: activeBooking,
         pendingExpertVisit: pendingExpertVisit,
       );
+
+      if (activeBooking != null) {
+        await _loadSavedCartItems();
+      } else if (mounted) {
+        setState(() {
+          _cartItems = [];
+        });
+      }
     } catch (e) {
       debugPrint('❌ _fetchActiveSubscription error: $e');
 
@@ -2192,14 +2343,14 @@ class _HomeViewState extends State<HomeView> {
               '')
               .toString(),
           profilePhotoUrl: (normalizedBooking['profilePhotoUrl'] ?? '').toString(),
-          cartItems: const [],
+          cartItems: _cartItems,
           nextEligibleBookingDate: _getNextFutureBookedDate(normalizedBooking),
           nextFutureDate: _getNextFutureBookedDate(normalizedBooking),
           timeRemaining: '',
           isWithinCutoff: true,
           fetchCatalogUrl:
           'https://18hkwgpuo1.execute-api.ap-south-1.amazonaws.com/zohoInventoryFetch',
-          onCartUpdated: (_) {},
+          onCartUpdated: _updateCartItems,
           onRefreshRequested: () async {
             await _fetchActiveSubscription();
           },
