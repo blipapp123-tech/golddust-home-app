@@ -476,6 +476,38 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
         .toString()
         .trim();
 
+    final dealClosedLocation =
+    recommendation['dealClosedLocation'] is Map
+        ? Map<String, dynamic>.from(recommendation['dealClosedLocation'])
+        : <String, dynamic>{};
+
+    final dealClosedLatitude =
+        recommendation['dealClosedLatitude'] ??
+            dealClosedLocation['latitude'];
+
+    final dealClosedLongitude =
+        recommendation['dealClosedLongitude'] ??
+            dealClosedLocation['longitude'];
+
+    final dealClosedAccuracy =
+        recommendation['dealClosedAccuracy'] ??
+            dealClosedLocation['accuracy'];
+
+    final dealClosedLocationCapturedAt =
+        recommendation['dealClosedLocationCapturedAt'] ??
+            dealClosedLocation['capturedAt'];
+
+    final dealClosedLocationUrl =
+        recommendation['dealClosedLocationUrl'] ??
+            recommendation['dealClosedGoogleMapsUrl'] ??
+            dealClosedLocation['googleMapsUrl'] ??
+            dealClosedLocation['googleMapsLink'];
+
+    final dealClosedLocationSource =
+        recommendation['dealClosedLocationSource'] ??
+            dealClosedLocation['source'] ??
+            'expert_visit_deal_closed_location';
+
     final Map<String, dynamic> body = {
       'firstName': firstName,
       'lastName': lastName,
@@ -504,6 +536,24 @@ class _BookingSummaryViewState extends State<BookingSummaryView> {
       'subscriptionMonthTenure': 1,
       'sourceVisitID': sourceVisitId,
       'paymentSessionId': _currentPaymentSessionId ?? '',
+
+      // Expert visit captured location for Maali app navigation
+      'dealClosedLocation': dealClosedLocation,
+      'dealClosedLatitude': dealClosedLatitude,
+      'dealClosedLongitude': dealClosedLongitude,
+      'dealClosedAccuracy': dealClosedAccuracy,
+      'dealClosedLocationCapturedAt': dealClosedLocationCapturedAt,
+      'dealClosedLocationUrl': dealClosedLocationUrl,
+      'dealClosedLocationSource': dealClosedLocationSource,
+
+      // Clean navigation fields that booking Lambda should copy to zohoBookings
+      'navigationLatitude': dealClosedLatitude,
+      'navigationLongitude': dealClosedLongitude,
+      'navigationLocationUrl': dealClosedLocationUrl,
+      'navigationLocationSource': dealClosedLocationUrl != null &&
+          dealClosedLocationUrl.toString().trim().isNotEmpty
+          ? 'expert_visit_deal_closed_location'
+          : '',
     };
 
     for (int i = 0; i < selectedSlots.length; i++) {
