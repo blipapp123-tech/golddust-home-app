@@ -4,6 +4,7 @@ import 'package:get/get.dart';
 import '../app/app_constants.dart';
 import '../app/app_text_styles.dart';
 import '../app/routes.dart';
+import '../services/booking_service.dart';
 import '../widgets/liquid_glass_instruction_card.dart';
 
 class PlanDetailsPage extends StatelessWidget {
@@ -80,6 +81,12 @@ class PlanDetailsPage extends StatelessWidget {
                       subtitle: subtitle,
                       duration: duration,
                     ),
+
+                    // This does not replace or modify the selected plan above.
+                    // It only adds a separate details widget when an expert
+                    // recommendation has already been pushed for this user.
+                    _buildPushedPlanDetailsWidget(),
+
                     const SizedBox(height: 26),
                     Text(
                       'What’s included',
@@ -264,6 +271,235 @@ class PlanDetailsPage extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+
+  Widget _buildPushedPlanDetailsWidget() {
+    final resolvedUserId = userId?.trim() ?? '';
+
+    if (resolvedUserId.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return FutureBuilder<List<dynamic>>(
+      future: BookingService.fetchExpertRecommendations(resolvedUserId),
+      builder: (context, snapshot) {
+        // Nothing extra is displayed while loading, on error, or when no
+        // recommendation has been pushed.
+        if (snapshot.connectionState == ConnectionState.waiting ||
+            snapshot.hasError ||
+            snapshot.data == null ||
+            snapshot.data!.isEmpty) {
+          return const SizedBox.shrink();
+        }
+
+        final rawRecommendation = snapshot.data!.first;
+
+        if (rawRecommendation is! Map) {
+          return const SizedBox.shrink();
+        }
+
+        final recommendation =
+        Map<String, dynamic>.from(rawRecommendation);
+
+        final pushedPlanName = _firstNonEmpty([
+          recommendation['planName'],
+          recommendation['recommendedPlan'],
+          recommendation['recommended_plan'],
+          recommendation['planRecommendation'],
+          recommendation['plan'],
+        ]);
+
+        if (pushedPlanName.isEmpty) {
+          return const SizedBox.shrink();
+        }
+
+        final pushedPlanDetails =
+        _detailsForPushedPlan(pushedPlanName);
+
+        if (pushedPlanDetails.isEmpty) {
+          return const SizedBox.shrink();
+        }
+
+        return Padding(
+          padding: const EdgeInsets.only(top: 18),
+          child: LiquidGlassInstructionCard(
+            radius: 24,
+            minHeight: 0,
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        color: _gold.withOpacity(0.18),
+                        borderRadius: BorderRadius.circular(13),
+                      ),
+                      child: const Icon(
+                        Icons.workspace_premium_rounded,
+                        size: 21,
+                        color: _gold,
+                      ),
+                    ),
+                    const SizedBox(width: 11),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Recommended Plan Details',
+                            style: AppTextStyles.caption.copyWith(
+                              color: AppColors.textSecondary,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            pushedPlanName,
+                            style: AppTextStyles.cardTitle.copyWith(
+                              color: AppColors.primaryColor,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                ...pushedPlanDetails.map(
+                      (item) => _buildRecommendedPlanDetailRow(item),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  String _firstNonEmpty(List<dynamic> values) {
+    for (final value in values) {
+      final text = value?.toString().trim() ?? '';
+
+      if (text.isNotEmpty) {
+        return text;
+      }
+    }
+
+    return '';
+  }
+
+  List<String> _detailsForPushedPlan(String pushedPlanName) {
+    final normalizedName = pushedPlanName.trim().toLowerCase();
+
+    if (normalizedName.contains('bloom')) {
+      return const [
+        'Perfect for small balconies and indoor plant setups',
+        'Less than 10 pots',
+        'Soil loosening and weeding',
+        'Deadheading & removal of dry leaves',
+        'Pruning, trimming & cutting',
+        'Fertilisation & nourishment',
+        'Watering',
+        'Repotting & plant restructuring',
+        'Leaf cleaning',
+        'Pest & disease management',
+        'Post-work clean-up and upkeep',
+      ];
+    }
+
+    if (normalizedName.contains('evergreen')) {
+      return const [
+        'Ideal for larger balconies, terraces, and plant collections',
+        'Between 11 to 50 pots',
+        'Soil loosening and weeding',
+        'Deadheading & removal of dry leaves',
+        'Pruning, trimming & cutting',
+        'Fertilisation & nourishment',
+        'Watering',
+        'Repotting & plant restructuring',
+        'Leaf cleaning',
+        'Pest & disease management',
+        'Post-work clean-up and upkeep',
+        'Dedicated expert attention once a month',
+      ];
+    }
+
+    if (normalizedName.contains('nurture')) {
+      return const [
+        'Best for dense gardens and high-maintenance setups',
+        '50+ pots or dense plant setups',
+        'Deep pruning and structural maintenance',
+        'Soil loosening and weeding',
+        'Deadheading & removal of dry leaves',
+        'Fertilisation & plant nourishment',
+        'Watering & moisture balance management',
+        'Leaf cleaning & shine maintenance',
+        'Advanced pest & disease treatment',
+        'Soil enrichment & conditioning',
+        'Repotting & plant restructuring',
+        'Detailed plant health monitoring',
+        'Post-work clean-up and upkeep',
+        'Dedicated expert attention on alternate visits',
+      ];
+    }
+
+    // Any recommendation containing the word "custom" uses these
+    // Custom Plan details. This covers Custom, Custom Elite,
+    // Custom Elite-2000, Custom Premium, etc.
+    if (normalizedName.contains('custom')) {
+      return const [
+        'Designed specifically for your garden size and needs',
+        'Flexible number of visits per week',
+        'Suitable for villas, large terraces, or special requirements',
+        'Includes all services: pruning, fertilisation, pest control, etc.',
+        'Priority expert support',
+        'Customised plant care strategy',
+      ];
+    }
+
+    return const [];
+  }
+
+  Widget _buildRecommendedPlanDetailRow(String item) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 25,
+            height: 25,
+            decoration: BoxDecoration(
+              color: _gold.withOpacity(0.18),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.check_rounded,
+              size: 15,
+              color: _gold,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              item,
+              style: AppTextStyles.body.copyWith(
+                height: 1.4,
+                color: AppColors.textPrimary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

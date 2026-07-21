@@ -54,6 +54,12 @@ class _LoginScreenState extends State<LoginScreen> {
 
   static const String invalidNumberLogUrl =
       'https://d2lhw1jjv7.execute-api.ap-south-1.amazonaws.com/invalid_number_log';
+
+  static const String _whatsAppWidgetId = '3566746d727a313630363530';
+  static const String _smsWidgetId = '3566746c6171323730373833';
+  static const String _otpWidgetToken = '456793TzOsD5pgd7A68554df9P1';
+  static const int _resendWaitSeconds = 60;
+
   static const String googleReviewPhone = '9999999999';
   static const String googleReviewOtp = '123456';
   static const String googleReviewUserId = 'otp9999999999';
@@ -102,10 +108,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     analytics.logEvent(name: 'login_screen_viewed');
 
-    OTPWidget.initializeWidget(
-      '3566746d727a313630363530',
-      '456793TzOsD5pgd7A68554df9P1',
-    );
+    _initializeSelectedOtpWidget();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _startContinuousServiceScroll();
@@ -296,7 +299,186 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
 
+  String get _selectedChannelLabel {
+    return selectedOtpChannel == 'sms' ? 'SMS' : 'WhatsApp';
+  }
+
+  int get _selectedRetryChannel {
+    return selectedOtpChannel == 'sms' ? 11 : 12;
+  }
+
+  void _initializeSelectedOtpWidget() {
+    OTPWidget.initializeWidget(
+      selectedOtpChannel == 'sms' ? _smsWidgetId : _whatsAppWidgetId,
+      _otpWidgetToken,
+    );
+  }
+
+  bool _isOtpSdkSuccess(dynamic response) {
+    if (response is! Map) return false;
+
+    return response['type']?.toString().trim().toLowerCase() == 'success';
+  }
+
+  String _extractOtpSdkMessage(dynamic response) {
+    if (response == null) return '';
+
+    if (response is Map) {
+      const possibleKeys = [
+        'message',
+        'error',
+        'description',
+        'detail',
+        'reason',
+      ];
+
+      for (final key in possibleKeys) {
+        final value = response[key];
+        if (value != null && value.toString().trim().isNotEmpty) {
+          return value.toString().trim();
+        }
+      }
+    }
+
+    return response.toString().trim();
+  }
+
+  String _requestIdTail(String? requestId) {
+    final value = requestId?.trim() ?? '';
+    if (value.isEmpty) return 'none';
+    if (value.length <= 8) return value;
+    return value.substring(value.length - 8);
+  }
+
+  String _analyticsSafeText(String value, {int maxLength = 90}) {
+    final compact = value.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (compact.isEmpty) return 'none';
+    if (compact.length <= maxLength) return compact;
+    return compact.substring(0, maxLength);
+  }
+
+  Future<void> _recordOtpSdkResponse({
+    required String action,
+    required dynamic response,
+    required bool success,
+    String? requestId,
+  }) async {
+    final responseType = response is Map
+        ? response['type']?.toString() ?? 'unknown'
+        : response == null
+        ? 'null'
+        : response.runtimeType.toString();
+
+    final providerMessage =
+    success ? 'success' : _extractOtpSdkMessage(response);
+
+    debugPrint(
+      'MSG91 OTP action=$action '
+          'channel=$selectedOtpChannel '
+          'success=$success '
+          'reqTail=${_requestIdTail(requestId ?? _reqId)} '
+          'response=$response',
+    );
+
+    try {
+      await analytics.logEvent(
+        name: 'otp_sdk_response',
+        parameters: {
+          'action': _analyticsSafeText(action, maxLength: 35),
+          'channel': selectedOtpChannel,
+          'success': success ? 1 : 0,
+          'response_type': _analyticsSafeText(
+            responseType,
+            maxLength: 35,
+          ),
+          'provider_message': _analyticsSafeText(providerMessage),
+          'req_id_tail': _requestIdTail(requestId ?? _reqId),
+        },
+      );
+    } catch (_) {
+      // OTP flow must not fail if analytics logging fails.
+    }
+  }
+
+  bool _looksLikeExpiredOrInvalidSession(String message) {
+    final value = message.toLowerCase();
+
+    return value.contains('expired') ||
+        value.contains('session') ||
+        value.contains('request id') ||
+        value.contains('request_id') ||
+        value.contains('reqid') ||
+        value.contains('req id') ||
+        value.contains('retry limit') ||
+        value.contains('attempt limit') ||
+        value.contains('maximum attempt');
+  }
+
+  String _verificationFailureMessage(dynamic response) {
+    final providerMessage = _extractOtpSdkMessage(response).toLowerCase();
+
+    if (providerMessage.contains('expired')) {
+      return 'This OTP has expired. Please request a new OTP.';
+    }
+
+    if (providerMessage.contains('invalid') ||
+        providerMessage.contains('incorrect') ||
+        providerMessage.contains('wrong') ||
+        providerMessage.contains('mismatch')) {
+      return 'Incorrect OTP. Please enter the latest OTP you received.';
+    }
+
+    if (providerMessage.contains('attempt') ||
+        providerMessage.contains('limit')) {
+      return 'Too many unsuccessful attempts. Please request a new OTP.';
+    }
+
+    return 'OTP could not be verified. Please use the latest OTP or request a new one.';
+  }
+
+  Future<String> _createFreshOtpRequest({
+    required String cleanedMobile,
+    required String action,
+  }) async {
+    _initializeSelectedOtpWidget();
+
+    final response = await OTPWidget.sendOTP({
+      'identifier': '91$cleanedMobile',
+    }).timeout(
+      const Duration(seconds: 60),
+      onTimeout: () {
+        throw TimeoutException('OTP sending timed out');
+      },
+    );
+
+    final success = _isOtpSdkSuccess(response);
+    final requestId = success ? _extractOtpSdkMessage(response) : '';
+
+    await _recordOtpSdkResponse(
+      action: action,
+      response: response,
+      success: success && requestId.isNotEmpty,
+      requestId: requestId.isEmpty ? null : requestId,
+    );
+
+    if (!success) {
+      final message = _extractOtpSdkMessage(response);
+      throw Exception(
+        message.isEmpty ? 'MSG91 rejected the OTP request' : message,
+      );
+    }
+
+    if (requestId.isEmpty) {
+      throw Exception('MSG91 did not return a request ID');
+    }
+
+    return requestId;
+  }
+
+
   Future<void> handleSendOtp() async {
+    if (isLoading) return;
+
     FocusScope.of(context).unfocus();
 
     final cleaned = normalizeIndianMobileStrict(phoneController.text.trim());
@@ -335,47 +517,22 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    final identifier = '91$cleaned';
-
     setState(() {
       isLoading = true;
-      loadingMessage =
-      'Sending OTP on ${selectedOtpChannel == 'sms' ? 'SMS' : 'WhatsApp'}...';
+      loadingMessage = 'Sending OTP on $_selectedChannelLabel...';
     });
 
     try {
-      if (selectedOtpChannel == 'sms') {
-        OTPWidget.initializeWidget(
-          '3566746c6171323730373833',
-          '456793TzOsD5pgd7A68554df9P1',
-        );
-        await analytics.logEvent(name: 'otp_sms_send_attempted');
-      } else {
-        OTPWidget.initializeWidget(
-          '3566746d727a313630363530',
-          '456793TzOsD5pgd7A68554df9P1',
-        );
-        await analytics.logEvent(name: 'otp_whatsapp_send_attempted');
-      }
-
-      final response = await OTPWidget.sendOTP({
-        'identifier': identifier,
-      }).timeout(
-        const Duration(seconds: 60),
-        onTimeout: () {
-          throw TimeoutException('OTP sending timed out');
-        },
+      await analytics.logEvent(
+        name: selectedOtpChannel == 'sms'
+            ? 'otp_sms_send_attempted'
+            : 'otp_whatsapp_send_attempted',
       );
 
-      if (response == null) {
-        throw Exception('Null response from SendOTP SDK');
-      }
-
-      final reqId = response['message'];
-
-      if (response['type'] != 'success' || reqId == null) {
-        throw Exception('Invalid OTP send response: $response');
-      }
+      final requestId = await _createFreshOtpRequest(
+        cleanedMobile: cleaned,
+        action: 'initial_send',
+      );
 
       await analytics.logEvent(
         name: selectedOtpChannel == 'sms'
@@ -384,16 +541,30 @@ class _LoginScreenState extends State<LoginScreen> {
       );
 
       if (!mounted) return;
+
+      otpController.clear();
+
       setState(() {
         isOtpSent = true;
-        _reqId = reqId;
-        _resendCountdown = 60;
+        _reqId = requestId;
+        _resendCountdown = _resendWaitSeconds;
         _isResendEnabled = false;
         isLoading = false;
       });
 
       _startResendTimer();
-    } catch (e) {
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'OTP sent on $_selectedChannelLabel. Please use the latest OTP.',
+          ),
+        ),
+      );
+    } catch (e, stackTrace) {
+      debugPrint('OTP send failed: $e');
+      debugPrintStack(stackTrace: stackTrace);
+
       await analytics.logEvent(
         name: selectedOtpChannel == 'sms'
             ? 'otp_sms_send_failed'
@@ -401,17 +572,25 @@ class _LoginScreenState extends State<LoginScreen> {
       );
 
       if (!mounted) return;
-      setState(() => isLoading = false);
+
+      setState(() {
+        isLoading = false;
+      });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('OTP sending failed. Please try again.'),
+        SnackBar(
+          content: Text(
+            'OTP could not be sent on $_selectedChannelLabel. '
+                'Please try again${selectedOtpChannel == 'whatsapp' ? ' or select SMS OTP' : ''}.',
+          ),
         ),
       );
     }
   }
 
   Future<void> handleVerifyOtp() async {
+    if (isLoading) return;
+
     FocusScope.of(context).unfocus();
 
     final enteredOtp = otpController.text.trim();
@@ -431,7 +610,7 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    if (_reqId == null || enteredOtp.isEmpty) {
+    if (_reqId == null || _reqId!.trim().isEmpty || enteredOtp.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please enter the OTP')),
       );
@@ -445,6 +624,9 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
+    final requestId = _reqId!;
+    bool otpVerified = false;
+
     setState(() {
       isLoading = true;
       loadingMessage = 'Verifying OTP...';
@@ -457,8 +639,10 @@ class _LoginScreenState extends State<LoginScreen> {
             : 'otp_whatsapp_verify_attempted',
       );
 
+      _initializeSelectedOtpWidget();
+
       final response = await OTPWidget.verifyOTP({
-        'reqId': _reqId!,
+        'reqId': requestId,
         'otp': enteredOtp,
       }).timeout(
         const Duration(seconds: 120),
@@ -467,21 +651,50 @@ class _LoginScreenState extends State<LoginScreen> {
         },
       );
 
-      if (response == null) {
-        throw Exception('Null response from OTP verification');
-      }
+      final isVerified = _isOtpSdkSuccess(response);
 
-      final isVerified = response['type'] == 'success';
+      await _recordOtpSdkResponse(
+        action: 'verify',
+        response: response,
+        success: isVerified,
+        requestId: requestId,
+      );
 
       if (!isVerified) {
+        await analytics.logEvent(
+          name: selectedOtpChannel == 'sms'
+              ? 'otp_sms_verify_failed'
+              : 'otp_whatsapp_verify_failed',
+        );
+
+        final providerMessage = _extractOtpSdkMessage(response);
+        final enableImmediateResend =
+        _looksLikeExpiredOrInvalidSession(providerMessage);
+
         if (!mounted) return;
-        setState(() => isLoading = false);
+
+        if (enableImmediateResend) {
+          _resendTimer?.cancel();
+        }
+
+        setState(() {
+          isLoading = false;
+
+          if (enableImmediateResend) {
+            _resendCountdown = 0;
+            _isResendEnabled = true;
+          }
+        });
 
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Invalid or expired OTP')),
+          SnackBar(
+            content: Text(_verificationFailureMessage(response)),
+          ),
         );
         return;
       }
+
+      otpVerified = true;
 
       final phoneNumber = '+91$cleaned';
 
@@ -491,6 +704,11 @@ class _LoginScreenState extends State<LoginScreen> {
         body: jsonEncode({
           'phoneNumber': phoneNumber,
         }),
+      ).timeout(
+        const Duration(seconds: 60),
+        onTimeout: () {
+          throw TimeoutException('Login request timed out');
+        },
       );
 
       if (loginResponse.statusCode != 200) {
@@ -499,11 +717,11 @@ class _LoginScreenState extends State<LoginScreen> {
 
       final data = jsonDecode(loginResponse.body);
 
-      if (data['customToken'] == null) {
+      if (data is! Map || data['customToken'] == null) {
         throw Exception('Custom token not returned');
       }
 
-      final customToken = data['customToken'];
+      final customToken = data['customToken'].toString();
 
       final userCredential = await _auth.signInWithCustomToken(customToken);
       final firebaseUser = userCredential.user;
@@ -533,19 +751,27 @@ class _LoginScreenState extends State<LoginScreen> {
       await prefs.setString('userPhone', phoneNumber);
       await prefs.setString('maaliUserId', maaliUserId);
       await prefs.setBool('isLoggedIn', true);
+
       await OneSignalNotificationService.initialize(
         userId: maaliUserId,
         userName: phoneNumber,
       );
+
       if (!mounted) return;
-      setState(() => isLoading = false);
+
+      setState(() {
+        isLoading = false;
+      });
 
       _navigateAfterLogin(
         firebaseUserId: firebaseUser.uid,
         maaliUserId: maaliUserId,
         phoneNumber: phoneNumber,
       );
-    } catch (e) {
+    } catch (e, stackTrace) {
+      debugPrint('OTP verification/login failed: $e');
+      debugPrintStack(stackTrace: stackTrace);
+
       await analytics.logEvent(
         name: selectedOtpChannel == 'sms'
             ? 'otp_sms_verify_failed'
@@ -553,36 +779,97 @@ class _LoginScreenState extends State<LoginScreen> {
       );
 
       if (!mounted) return;
-      setState(() => isLoading = false);
+
+      setState(() {
+        isLoading = false;
+      });
+
+      final String message;
+
+      if (e is TimeoutException) {
+        message = otpVerified
+            ? 'Login timed out after OTP verification. Please try again.'
+            : 'OTP verification timed out. Please check your internet and try again.';
+      } else {
+        message = otpVerified
+            ? 'OTP was verified, but login could not be completed. Please try again.'
+            : 'OTP verification failed. Please request a new OTP and try again.';
+      }
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('OTP verification failed')),
+        SnackBar(content: Text(message)),
       );
     }
   }
 
   Future<void> _resendOtp() async {
-    if (_reqId == null) return;
+    if (isLoading) return;
+
+    final cleaned = normalizeIndianMobileStrict(phoneController.text.trim());
+
+    if (cleaned == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Invalid mobile number')),
+      );
+      return;
+    }
 
     setState(() {
       isLoading = true;
-      loadingMessage =
-      'Resending OTP on ${selectedOtpChannel == 'sms' ? 'SMS' : 'WhatsApp'}...';
+      loadingMessage = 'Resending OTP on $_selectedChannelLabel...';
     });
 
     try {
-      final response = await OTPWidget.retryOTP({
-        'reqId': _reqId!,
-        'retryChannel': selectedOtpChannel == 'sms' ? 11 : 12,
-      }).timeout(
-        const Duration(seconds: 60),
-        onTimeout: () {
-          throw TimeoutException('OTP resend timed out');
-        },
-      );
+      bool retrySucceeded = false;
+      bool createdFreshSession = false;
+      String? freshRequestId;
 
-      if (response == null) {
-        throw Exception('Null response from retryOTP');
+      final currentRequestId = _reqId?.trim();
+
+      if (currentRequestId != null && currentRequestId.isNotEmpty) {
+        try {
+          _initializeSelectedOtpWidget();
+
+          final retryResponse = await OTPWidget.retryOTP({
+            'reqId': currentRequestId,
+            'retryChannel': _selectedRetryChannel,
+          }).timeout(
+            const Duration(seconds: 60),
+            onTimeout: () {
+              throw TimeoutException('OTP resend timed out');
+            },
+          );
+
+          retrySucceeded = _isOtpSdkSuccess(retryResponse);
+
+          await _recordOtpSdkResponse(
+            action: 'retry',
+            response: retryResponse,
+            success: retrySucceeded,
+            requestId: currentRequestId,
+          );
+        } on TimeoutException {
+          rethrow;
+        } catch (e, stackTrace) {
+          debugPrint('MSG91 retryOTP threw an error: $e');
+          debugPrintStack(stackTrace: stackTrace);
+          retrySucceeded = false;
+        }
+      }
+
+      if (!retrySucceeded) {
+        await analytics.logEvent(
+          name: selectedOtpChannel == 'sms'
+              ? 'otp_sms_resend_fresh_fallback'
+              : 'otp_whatsapp_resend_fresh_fallback',
+        );
+
+        freshRequestId = await _createFreshOtpRequest(
+          cleanedMobile: cleaned,
+          action: 'resend_fresh_fallback',
+        );
+
+        createdFreshSession = true;
       }
 
       await analytics.logEvent(
@@ -592,14 +879,37 @@ class _LoginScreenState extends State<LoginScreen> {
       );
 
       if (!mounted) return;
+
+      otpController.clear();
+
       setState(() {
-        _resendCountdown = 60;
+        if (freshRequestId != null && freshRequestId.isNotEmpty) {
+          _reqId = freshRequestId;
+        }
+
+        _resendCountdown = _resendWaitSeconds;
         _isResendEnabled = false;
         isLoading = false;
       });
 
       _startResendTimer();
-    } catch (e) {
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            createdFreshSession
+                ? 'The previous OTP session could not be reused. '
+                'A fresh OTP has been sent on $_selectedChannelLabel. '
+                'Please use only the latest OTP.'
+                : 'A new OTP has been sent on $_selectedChannelLabel. '
+                'Please use only the latest OTP.',
+          ),
+        ),
+      );
+    } catch (e, stackTrace) {
+      debugPrint('OTP resend failed: $e');
+      debugPrintStack(stackTrace: stackTrace);
+
       await analytics.logEvent(
         name: selectedOtpChannel == 'sms'
             ? 'otp_sms_resend_failed'
@@ -607,10 +917,18 @@ class _LoginScreenState extends State<LoginScreen> {
       );
 
       if (!mounted) return;
-      setState(() => isLoading = false);
+
+      setState(() {
+        isLoading = false;
+      });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to resend OTP')),
+        SnackBar(
+          content: Text(
+            'Unable to resend OTP on $_selectedChannelLabel. '
+                'Please check your internet and try again.',
+          ),
+        ),
       );
     }
   }
@@ -619,13 +937,22 @@ class _LoginScreenState extends State<LoginScreen> {
     _resendTimer?.cancel();
 
     _resendTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted) return;
-
-      if (_resendCountdown == 0) {
+      if (!mounted) {
         timer.cancel();
-        setState(() => _isResendEnabled = true);
+        return;
+      }
+
+      if (_resendCountdown <= 1) {
+        timer.cancel();
+
+        setState(() {
+          _resendCountdown = 0;
+          _isResendEnabled = true;
+        });
       } else {
-        setState(() => _resendCountdown--);
+        setState(() {
+          _resendCountdown--;
+        });
       }
     });
   }
@@ -659,7 +986,7 @@ class _LoginScreenState extends State<LoginScreen> {
       isOtpSent = false;
       otpController.clear();
       _reqId = null;
-      _resendCountdown = 60;
+      _resendCountdown = _resendWaitSeconds;
       _isResendEnabled = false;
     });
   }

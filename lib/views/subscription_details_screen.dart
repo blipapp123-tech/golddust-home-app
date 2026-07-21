@@ -10,6 +10,7 @@ import '../app/app_text_styles.dart';
 import 'add_products_for_next_visit_screen.dart';
 import 'reschedule_booking_screen.dart';
 import 'view_products_for_booking_screen.dart';
+import 'payment_history_screen.dart';
 
 class SubscriptionDetailsScreen extends StatefulWidget {
   final Map<String, dynamic> booking;
@@ -824,7 +825,7 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
           ],
         );
 
-        final isDone = visit['isDone'] == true || _isVisitDoneFromStatus(visitStatus);
+        final isDone = _isVisitDoneFromStatus(visitStatus);
 
         final nestedBooking = visit['booking'] is Map
             ? Map<String, dynamic>.from(visit['booking'] as Map)
@@ -1173,6 +1174,17 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
     final year = cutoff.year.toString();
 
     return '$day-$month-$year, 3:30 PM';
+  }
+
+  void _openPaymentHistory() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PaymentHistoryScreen(
+          userId: widget.userId,
+        ),
+      ),
+    );
   }
 
   void _openOrdersScreen() {
@@ -1585,41 +1597,31 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
     );
   }
 
-  Map<String, dynamic> _getVisitProgressStats(List<Map<String, dynamic>> visits) {
+  Map<String, dynamic> _getVisitProgressStats(
+      List<Map<String, dynamic>> visits,
+      ) {
     final totalVisits = visits.length;
 
     final completedVisits = visits.where((visit) {
-      final isDone = visit['isDone'] == true;
+      final status = (
+          visit['taskStatus'] ??
+              visit['TaskStatus'] ??
+              visit['task_status'] ??
+              visit['status'] ??
+              visit['visitStatus'] ??
+              visit['bookingStatus'] ??
+              visit['serviceStatus'] ??
+              ''
+      ).toString().trim();
 
-      final isPast = visit['isPast'] == true;
-
-      final status = (visit['taskStatus'] ??
-          visit['TaskStatus'] ??
-          visit['task_status'] ??
-          visit['status'] ??
-          visit['visitStatus'] ??
-          visit['bookingStatus'] ??
-          visit['serviceStatus'] ??
-          '')
-          .toString()
-          .trim()
-          .toLowerCase();
-
-      return isDone ||
-          isPast ||
-          status == 'done' ||
-          status == 'completed' ||
-          status == 'complete' ||
-          status == 'closed' ||
-          status == 'finished' ||
-          status == 'visit completed' ||
-          status == 'service completed';
+      return _isVisitDoneFromStatus(status);
     }).length;
 
     final remainingVisits =
     (totalVisits - completedVisits).clamp(0, totalVisits);
 
-    final progress = totalVisits == 0 ? 0.0 : completedVisits / totalVisits;
+    final progress =
+    totalVisits == 0 ? 0.0 : completedVisits / totalVisits;
 
     return {
       'totalVisits': totalVisits,
@@ -3100,12 +3102,58 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
           backgroundColor: _softBg,
           elevation: 0,
           foregroundColor: AppColors.textPrimary,
+          leadingWidth: 58,
+          leading: Padding(
+            padding: const EdgeInsets.only(left: 12),
+            child: Center(
+              child: Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: _gold,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: IconButton(
+                  tooltip: 'Back',
+                  padding: EdgeInsets.zero,
+                  onPressed: () => Navigator.maybePop(context),
+                  icon: const Icon(
+                    Icons.arrow_back_rounded,
+                    size: 21,
+                    color: _darkGreen,
+                  ),
+                ),
+              ),
+            ),
+          ),
           title: Text(
             'Subscription Details',
             style: AppTextStyles.cardTitle.copyWith(
               color: AppColors.textPrimary,
             ),
           ),
+          actions: [
+            Padding(
+              padding: const EdgeInsets.only(right: 12),
+              child: IconButton(
+                tooltip: 'Payment History',
+                onPressed: _openPaymentHistory,
+                icon: Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: _gold.withOpacity(0.14),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: const Icon(
+                    Icons.account_balance_wallet_rounded,
+                    size: 21,
+                    color: _gold,
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
         body: RefreshIndicator(
           onRefresh: _refreshScreenData,

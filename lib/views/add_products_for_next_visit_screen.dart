@@ -112,6 +112,91 @@ class _AddProductsForNextVisitScreenState
     return double.tryParse(value.toString()) ?? 0;
   }
 
+  bool? _parseAvailabilityValue(dynamic value) {
+    if (value == null) return null;
+
+    if (value is bool) return value;
+
+    if (value is num) return value != 0;
+
+    final normalized = value.toString().trim().toLowerCase();
+
+    if (const {
+      'true',
+      '1',
+      'yes',
+      'y',
+      'active',
+      'available',
+      'enabled',
+    }.contains(normalized)) {
+      return true;
+    }
+
+    if (const {
+      'false',
+      '0',
+      'no',
+      'n',
+      'inactive',
+      'unavailable',
+      'not available',
+      'disabled',
+      'archived',
+    }.contains(normalized)) {
+      return false;
+    }
+
+    return null;
+  }
+
+  bool _isProductAvailable(Map<String, dynamic> product) {
+    final explicitAvailability = _parseAvailabilityValue(
+      product['isAvailable'] ??
+          product['isActive'] ??
+          product['active'] ??
+          product['Active'],
+    );
+
+    if (explicitAvailability != null) {
+      return explicitAvailability;
+    }
+
+    final statusAvailability = _parseAvailabilityValue(
+      product['status'] ??
+          product['Status'] ??
+          product['productStatus'] ??
+          product['inventoryStatus'] ??
+          product['availabilityStatus'],
+    );
+
+    // Keep old records available when no active/inactive field exists.
+    return statusAvailability ?? true;
+  }
+
+  bool _removeUnavailableCartItems(
+      List<Map<String, dynamic>> products,
+      ) {
+    final availabilityBySku = <String, bool>{};
+
+    for (final product in products) {
+      final sku = (product['skuID'] ?? '').toString().trim();
+      if (sku.isNotEmpty) {
+        availabilityBySku[sku] = _isProductAvailable(product);
+      }
+    }
+
+    final previousLength = _cart.length;
+
+    _cart.removeWhere((item) {
+      final sku = (item['skuID'] ?? '').toString().trim();
+      return availabilityBySku.containsKey(sku) &&
+          availabilityBySku[sku] == false;
+    });
+
+    return previousLength != _cart.length;
+  }
+
   Future<void> _fetchProducts() async {
     try {
       setState(() {
@@ -155,6 +240,9 @@ class _AddProductsForNextVisitScreenState
 
       if (!mounted) return;
 
+      final removedUnavailableCartItems =
+      _removeUnavailableCartItems(products);
+
       setState(() {
         _products = products;
         _categories = ['All', ...categorySet];
@@ -166,6 +254,19 @@ class _AddProductsForNextVisitScreenState
 
         _isLoading = false;
       });
+
+      if (removedUnavailableCartItems) {
+        _syncCartToParent();
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'An unavailable product was removed from your cart.',
+            ),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
     } catch (e) {
       debugPrint('Inventory fetch error: $e');
 
@@ -178,7 +279,9 @@ class _AddProductsForNextVisitScreenState
     }
   }
 
-  Map<String, dynamic> _normalizeInventoryProduct(Map<String, dynamic> raw) {
+  Map<String, dynamic> _normalizeInventoryProduct(
+      Map<String, dynamic> raw,
+      ) {
     final title = (raw['title'] ??
         raw['Title'] ??
         raw['name'] ??
@@ -231,6 +334,28 @@ class _AddProductsForNextVisitScreenState
         '')
         .toString();
 
+    final status = (raw['status'] ??
+        raw['Status'] ??
+        raw['productStatus'] ??
+        raw['inventoryStatus'] ??
+        '')
+        .toString()
+        .trim();
+
+    final explicitAvailability = _parseAvailabilityValue(
+      raw['isAvailable'] ??
+          raw['isActive'] ??
+          raw['active'] ??
+          raw['Active'],
+    );
+
+    final statusAvailability = _parseAvailabilityValue(
+      status.isNotEmpty ? status : raw['availabilityStatus'],
+    );
+
+    final isAvailable =
+        explicitAvailability ?? statusAvailability ?? true;
+
     return {
       ...raw,
       'title': title,
@@ -239,6 +364,12 @@ class _AddProductsForNextVisitScreenState
       'Image_1': image,
       'category': category,
       'subcategory': subcategory,
+      'status': status.isNotEmpty
+          ? status
+          : (isAvailable ? 'Active' : 'Inactive'),
+      'isAvailable': isAvailable,
+      'availabilityStatus':
+      isAvailable ? 'Available' : 'Not available',
     };
   }
 
@@ -444,16 +575,36 @@ class _AddProductsForNextVisitScreenState
   }
 
   void _updateQty(Map<String, dynamic> product, int delta) {
+    final isAvailable = _isProductAvailable(product);
+
+    // An unavailable item can never be added or increased.
+    if (!isAvailable && delta > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${product['title'] ?? 'This product'} is currently not available.',
+          ),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     if (!_isOrderingOpen()) {
       _showOrderingClosedMessage();
       return;
     }
 
     setState(() {
-      final index = _cart.indexWhere((e) => e['skuID'] == product['skuID']);
+      final index = _cart.indexWhere(
+            (item) => item['skuID'] == product['skuID'],
+      );
 
       if (index == -1 && delta > 0) {
-        _cart.add({...product, 'quantity': 1});
+        _cart.add({
+          ...product,
+          'quantity': 1,
+        });
       } else if (index != -1) {
         final currentQty =
             int.tryParse((_cart[index]['quantity'] ?? 1).toString()) ?? 1;
@@ -461,7 +612,7 @@ class _AddProductsForNextVisitScreenState
 
         if (nextQty <= 0) {
           _cart.removeAt(index);
-        } else {
+        } else if (isAvailable) {
           _cart[index]['quantity'] = nextQty;
         }
       }
@@ -1161,6 +1312,7 @@ class _AddProductsForNextVisitScreenState
                   return _ProductTile(
                     product: product,
                     qty: qty,
+                    isAvailable: _isProductAvailable(product),
                     onAdd: () => _updateQty(product, 1),
                     onRemove: () => _updateQty(product, -1),
                     onImageTap: () => _openImagePreview(product),
@@ -1212,6 +1364,7 @@ class _AddProductsForNextVisitScreenState
 class _ProductTile extends StatelessWidget {
   final Map<String, dynamic> product;
   final int qty;
+  final bool isAvailable;
   final VoidCallback onAdd;
   final VoidCallback onRemove;
   final VoidCallback onImageTap;
@@ -1219,6 +1372,7 @@ class _ProductTile extends StatelessWidget {
   const _ProductTile({
     required this.product,
     required this.qty,
+    required this.isAvailable,
     required this.onAdd,
     required this.onRemove,
     required this.onImageTap,
@@ -1257,22 +1411,48 @@ class _ProductTile extends StatelessWidget {
                       child: Stack(
                         children: [
                           Positioned.fill(
-                            child: Image.network(
-                              imageUrl,
-                              fit: BoxFit.cover,
-                              loadingBuilder: (_, child, progress) {
-                                if (progress == null) return child;
-                                return const Center(
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                );
-                              },
-                              errorBuilder: (_, __, ___) => const Center(
-                                child: Icon(Icons.image_outlined),
+                            child: Opacity(
+                              opacity: isAvailable ? 1 : 0.42,
+                              child: Image.network(
+                                imageUrl,
+                                fit: BoxFit.cover,
+                                loadingBuilder: (_, child, progress) {
+                                  if (progress == null) return child;
+                                  return const Center(
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  );
+                                },
+                                errorBuilder: (_, __, ___) => const Center(
+                                  child: Icon(Icons.image_outlined),
+                                ),
                               ),
                             ),
                           ),
+                          if (!isAvailable)
+                            Positioned(
+                              left: 7,
+                              top: 7,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 5,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withOpacity(0.68),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Text(
+                                  'NOT AVAILABLE',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ),
+                            ),
                           Positioned(
                             right: 7,
                             bottom: 7,
@@ -1329,7 +1509,26 @@ class _ProductTile extends StatelessWidget {
             Positioned(
               right: 0,
               bottom: 0,
-              child: qty == 0
+              child: !isAvailable
+                  ? Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 9,
+                  vertical: 7,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Text(
+                  'Not available',
+                  style: AppTextStyles.tiny.copyWith(
+                    color: Colors.grey.shade700,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              )
+                  : qty == 0
                   ? GestureDetector(
                 onTap: onAdd,
                 child: Container(
