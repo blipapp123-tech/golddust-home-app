@@ -11,6 +11,8 @@ import 'add_products_for_next_visit_screen.dart';
 import 'reschedule_booking_screen.dart';
 import 'view_products_for_booking_screen.dart';
 import 'payment_history_screen.dart';
+import '../services/booking_service.dart';
+import 'visit_feedback_screen.dart';
 
 class SubscriptionDetailsScreen extends StatefulWidget {
   final Map<String, dynamic> booking;
@@ -64,15 +66,24 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
   //bool _isSkipping = false;
   bool _isCancellingPlan = false;
   bool _isUnpaidInvoiceLoading = false;
+  bool _isRenewalLoading = true;
+  bool _isRefreshingAfterPayment = false;
+  String _renewalError = '';
+  Map<String, dynamic>? _renewal;
   List<Map<String, dynamic>> _unpaidInvoices = [];
   late List<Map<String, dynamic>> _cart;
+  late Map<String, dynamic> _booking;
 
   Timer? _countdownTimer;
+  Timer? _visitStatusRefreshTimer;
+  bool _isVisitStatusRefreshing = false;
   DateTime _now = DateTime.now();
 
   static const String _cancelPlanApiUrl = 'YOUR_CANCEL_PLAN_API_URL';
   static const String _fetchUnpaidInvoicesApiUrl =
       'https://wdr48h16e8.execute-api.ap-south-1.amazonaws.com/default/fetchCustomerUnpaidInvoices';
+  static const String _getRenewalStatusApiUrl =
+      'https://kq0urpel7k.execute-api.ap-south-1.amazonaws.com/default/getRenewalStatus';
   static const Color _darkGreen = Color(0xFF063F20);
   static const Color _cardGreen = Color(0xFF174F2D);
   static const Color _gold = Color(0xFFFFB72B);
@@ -84,7 +95,17 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
     WidgetsBinding.instance.addObserver(this);
 
     _cart = List<Map<String, dynamic>>.from(widget.cartItems);
-    _fetchUnpaidInvoices();
+    _booking = Map<String, dynamic>.from(widget.booking);
+
+    unawaited(_loadInitialPaymentData());
+    unawaited(_refreshVisitStatuses());
+
+    // Task completion may happen from the Maali app while this screen is open.
+    // Poll briefly so the visit status and progress update without reopening.
+    _visitStatusRefreshTimer = Timer.periodic(
+      const Duration(seconds: 10),
+          (_) => unawaited(_refreshVisitStatuses()),
+    );
 
     _countdownTimer = Timer.periodic(const Duration(minutes: 1), (_) {
       if (!mounted) return;
@@ -96,6 +117,7 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _countdownTimer?.cancel();
+    _visitStatusRefreshTimer?.cancel();
     super.dispose();
   }
 
@@ -112,15 +134,594 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _fetchUnpaidInvoices(showLoader: false);
+      unawaited(_refreshAfterPaymentReturn());
+      unawaited(_refreshVisitStatuses());
     }
+  }
+
+  Future<void> _loadInitialPaymentData() async {
+    // Renewal status tells us which deal belongs to the new cycle.
+    // Fetch it first, then load that cycle's visits.
+    await _fetchRenewalStatus();
+    await _refreshVisitStatuses();
+    await _fetchUnpaidInvoices();
   }
 
   Future<void> _refreshScreenData() async {
     await Future.wait([
       widget.onRefreshRequested(),
+      _refreshVisitStatuses(),
+      _fetchRenewalStatus(showLoader: false),
       _fetchUnpaidInvoices(showLoader: false),
     ]);
+  }
+
+  String _bookingDateValue(Map<String, dynamic> booking) {
+    return (
+        booking['dueDate'] ??
+            booking['date'] ??
+            booking['dateOfVisit'] ??
+            booking['bookingDate'] ??
+            ''
+    ).toString().trim();
+  }
+
+  // Exact DynamoDB sort key used by zohoBookings.
+  // BookingService keeps this separately because the visible date is
+  // normalized to DD-MM-YYYY for the UI.
+  String _bookingDdbDueDateValue(Map<String, dynamic> booking) {
+    final direct = (booking['ddbDueDate'] ?? '').toString().trim();
+    if (direct.isNotEmpty) return direct;
+
+    final rawZohoBooking = booking['rawZohoBooking'];
+    if (rawZohoBooking is Map) {
+      final rawDueDate = (rawZohoBooking['dueDate'] ?? '').toString().trim();
+      if (rawDueDate.isNotEmpty) return rawDueDate;
+    }
+
+    return _toDdbDueDate(_bookingDateValue(booking));
+  }
+
+  String _toDdbDueDate(String value) {
+    final clean = value.trim();
+    if (clean.isEmpty) return '';
+
+    try {
+      final parts = clean.split('-');
+      if (parts.length != 3) return clean;
+
+      final day = int.parse(parts[0]);
+      final month = int.parse(parts[1]);
+      final rawYear = int.parse(parts[2]);
+
+      if (parts[2].length == 2) {
+        return '${day.toString().padLeft(2, '0')}-'
+            '${month.toString().padLeft(2, '0')}-'
+            '${rawYear.toString().padLeft(2, '0')}';
+      }
+
+      return '${day.toString().padLeft(2, '0')}-'
+          '${month.toString().padLeft(2, '0')}-'
+          '${(rawYear % 100).toString().padLeft(2, '0')}';
+    } catch (_) {
+      return clean;
+    }
+  }
+
+  String _visitDdbDueDateValue(Map<String, dynamic> visit) {
+    final direct = (visit['ddbDueDate'] ?? '').toString().trim();
+    if (direct.isNotEmpty) return direct;
+
+    final nestedBooking = visit['booking'];
+    if (nestedBooking is Map) {
+      final nestedDirect =
+      (nestedBooking['ddbDueDate'] ?? '').toString().trim();
+      if (nestedDirect.isNotEmpty) return nestedDirect;
+
+      final rawZohoBooking = nestedBooking['rawZohoBooking'];
+      if (rawZohoBooking is Map) {
+        final rawDueDate =
+        (rawZohoBooking['dueDate'] ?? '').toString().trim();
+        if (rawDueDate.isNotEmpty) return rawDueDate;
+      }
+    }
+
+    final rawZohoBooking = visit['rawZohoBooking'];
+    if (rawZohoBooking is Map) {
+      final rawDueDate =
+      (rawZohoBooking['dueDate'] ?? '').toString().trim();
+      if (rawDueDate.isNotEmpty) return rawDueDate;
+    }
+
+    final displayDate = (
+        visit['dueDate'] ??
+            visit['date'] ??
+            ''
+    ).toString().trim();
+
+    return _toDdbDueDate(displayDate);
+  }
+
+  String _bookingStatusValue(Map<String, dynamic> booking) {
+    return (
+        booking['taskStatus'] ??
+            booking['TaskStatus'] ??
+            booking['task_status'] ??
+            booking['status'] ??
+            booking['bookingStatus'] ??
+            booking['visitStatus'] ??
+            booking['serviceStatus'] ??
+            ''
+    ).toString().trim();
+  }
+
+  String _bookingTimeSlotValue(Map<String, dynamic> booking) {
+    return (
+        booking['visitTimeSlot1'] ??
+            booking['timeSlot'] ??
+            booking['slot'] ??
+            booking['scheduleTime'] ??
+            ''
+    ).toString().trim();
+  }
+
+  String _bookingDealIdValue(Map<String, dynamic> booking) {
+    return (
+        booking['dealID'] ??
+            booking['dealId'] ??
+            booking['deal_id'] ??
+            booking['Deal_ID'] ??
+            ''
+    ).toString().trim();
+  }
+
+  String _bookingCycleStartValue(Map<String, dynamic> booking) {
+    return (
+        booking['Current_Cycle_Subscription_Start_Date'] ??
+            booking['currentCycleStartDate'] ??
+            booking['cycleStartDate'] ??
+            ''
+    ).toString().trim();
+  }
+
+  Future<void> _refreshVisitStatuses() async {
+    if (_isVisitStatusRefreshing || widget.userId.trim().isEmpty) return;
+
+    _isVisitStatusRefreshing = true;
+
+    try {
+      final response = await BookingService.fetchZohoBookings(
+        widget.userId.trim(),
+      );
+
+      final allBookings = response
+          .whereType<Map>()
+          .map((item) => Map<String, dynamic>.from(item))
+          .toList();
+
+      if (allBookings.isEmpty) return;
+
+      String currentDealId = _renewalCurrentDealId.isNotEmpty
+          ? _renewalCurrentDealId
+          : (
+          _booking['currentCycleDealID'] ??
+              _booking['dealID'] ??
+              _booking['dealId'] ??
+              ''
+      ).toString().trim();
+
+      final renewalCycleStart = (
+          _renewal?['cycleStartDate'] ??
+              _renewal?['renewalCycleStartDate'] ??
+              ''
+      ).toString().trim();
+
+      String currentCycleStart = renewalCycleStart.isNotEmpty
+          ? renewalCycleStart
+          : (
+          _booking['currentCycleStartDate'] ??
+              _booking['Current_Cycle_Subscription_Start_Date'] ??
+              ''
+      ).toString().trim();
+
+      List<Map<String, dynamic>> cycleBookings = allBookings.where((booking) {
+        final dealId = _bookingDealIdValue(booking);
+        final cycleStart = _bookingCycleStartValue(booking);
+
+        if (currentDealId.isNotEmpty) {
+          return dealId == currentDealId;
+        }
+
+        if (currentCycleStart.isNotEmpty) {
+          return cycleStart == currentCycleStart;
+        }
+
+        return true;
+      }).toList();
+
+      // If the existing screen payload did not contain a usable cycle key,
+      // identify the current cycle from the nearest today/future visit.
+      if (cycleBookings.isEmpty ||
+          (currentDealId.isEmpty && currentCycleStart.isEmpty)) {
+        final now = DateTime.now();
+        final today = DateTime(now.year, now.month, now.day);
+
+        final candidates = allBookings.where((booking) {
+          final date = _parseVisitDate(_bookingDateValue(booking));
+          if (date == null) return false;
+
+          final dateOnly = DateTime(date.year, date.month, date.day);
+          return !dateOnly.isBefore(today);
+        }).toList();
+
+        candidates.sort((a, b) {
+          final aDate =
+              _parseVisitDate(_bookingDateValue(a)) ?? DateTime(2100);
+          final bDate =
+              _parseVisitDate(_bookingDateValue(b)) ?? DateTime(2100);
+          return aDate.compareTo(bDate);
+        });
+
+        if (candidates.isNotEmpty) {
+          currentDealId = _bookingDealIdValue(candidates.first);
+          currentCycleStart = _bookingCycleStartValue(candidates.first);
+
+          cycleBookings = allBookings.where((booking) {
+            if (currentDealId.isNotEmpty) {
+              return _bookingDealIdValue(booking) == currentDealId;
+            }
+
+            if (currentCycleStart.isNotEmpty) {
+              return _bookingCycleStartValue(booking) == currentCycleStart;
+            }
+
+            return true;
+          }).toList();
+        }
+      }
+
+      if (cycleBookings.isEmpty) return;
+
+      cycleBookings.sort((a, b) {
+        final aDate =
+            _parseVisitDate(_bookingDateValue(a)) ?? DateTime(2100);
+        final bDate =
+            _parseVisitDate(_bookingDateValue(b)) ?? DateTime(2100);
+        return aDate.compareTo(bDate);
+      });
+
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+
+      final scheduledVisits = <Map<String, dynamic>>[];
+      final bookedDates = <String>[];
+
+      for (final booking in cycleBookings) {
+        final date = _bookingDateValue(booking);
+        final ddbDueDate = _bookingDdbDueDateValue(booking);
+        final parsedDate = _parseVisitDate(date);
+
+        if (date.isEmpty || parsedDate == null) continue;
+
+        final dateOnly = DateTime(
+          parsedDate.year,
+          parsedDate.month,
+          parsedDate.day,
+        );
+
+        final status = _bookingStatusValue(booking);
+
+        if (!bookedDates.contains(date)) {
+          bookedDates.add(date);
+        }
+
+        scheduledVisits.add({
+          // Display date used by the UI.
+          'date': date,
+          'dueDate': date,
+
+          // Exact DynamoDB sort key used by feedback/API calls.
+          'ddbDueDate': ddbDueDate,
+
+          'dealID': _bookingDealIdValue(booking),
+          'taskID': (
+              booking['taskID'] ??
+                  booking['taskId'] ??
+                  booking['Task_ID'] ??
+                  ''
+          ).toString(),
+          'mali': (
+              booking['assignedMali'] ??
+                  booking['assignedMaali'] ??
+                  booking['maaliName'] ??
+                  'Not assigned'
+          ).toString(),
+          'assignedMaliId': (
+              booking['assignedMaliId'] ??
+                  booking['assignedMaliID'] ??
+                  booking['assignedMaaliId'] ??
+                  booking['assignedMaaliID'] ??
+                  ''
+          ).toString(),
+          'timeSlot': _bookingTimeSlotValue(booking).isEmpty
+              ? 'N/A'
+              : _bookingTimeSlotValue(booking),
+          'status': status,
+          'taskStatus': status,
+          'visitStatus': status,
+          'isDone': _isVisitDoneFromStatus(status),
+
+          // Rating eligibility must use actual completed status,
+          // never merely the fact that the visit date has passed.
+          'feedbackEligible': _isVisitDoneFromStatus(
+            (
+                booking['status'] ??
+                    booking['taskStatus'] ??
+                    booking['visitStatus'] ??
+                    ''
+            ).toString(),
+          ),
+          'feedbackSubmitted': _feedbackSubmittedValue(
+            booking['feedbackSubmitted'],
+          ),
+          'feedbackId': (
+              booking['feedbackId'] ?? ''
+          ).toString(),
+          'feedbackRating': booking['feedbackRating'],
+          'bookingID': (
+              booking['bookingID'] ??
+                  booking['bookingId'] ??
+                  ''
+          ).toString(),
+
+          'booking': booking,
+          'isPast': dateOnly.isBefore(today),
+          'isToday': dateOnly.isAtSameMomentAs(today),
+          'isFuture': dateOnly.isAfter(today),
+        });
+      }
+
+      if (scheduledVisits.isEmpty) return;
+
+      final upcomingRows = cycleBookings.where((booking) {
+        final date = _parseVisitDate(_bookingDateValue(booking));
+        if (date == null) return false;
+
+        final dateOnly = DateTime(date.year, date.month, date.day);
+        return !dateOnly.isBefore(today);
+      }).toList();
+
+      final representative = upcomingRows.isNotEmpty
+          ? upcomingRows.first
+          : cycleBookings.last;
+
+      final refreshedBooking = Map<String, dynamic>.from(_booking)
+        ..addAll(representative)
+        ..['allScheduledVisits'] = scheduledVisits
+        ..['bookedDates'] = bookedDates
+        ..['rawZohoBookings'] = cycleBookings
+        ..['currentCycleDealID'] = currentDealId
+        ..['currentCycleStartDate'] = currentCycleStart
+        ..['bookingType'] = 'monthlySubscription';
+
+      if (!mounted) return;
+
+      setState(() {
+        _booking = refreshedBooking;
+
+        if (_selectedDateIndex >= scheduledVisits.length) {
+          _selectedDateIndex = -1;
+        }
+      });
+
+      debugPrint(
+        '✅ Subscription visit statuses refreshed: '
+            '${scheduledVisits.where((visit) => visit['isDone'] == true).length}'
+            '/${scheduledVisits.length} completed',
+      );
+    } catch (e) {
+      debugPrint('⚠️ Live visit status refresh failed: $e');
+    } finally {
+      _isVisitStatusRefreshing = false;
+    }
+  }
+
+  Map<String, dynamic> _decodeApiBody(String rawBody) {
+    final decoded = jsonDecode(rawBody);
+
+    if (decoded is! Map) {
+      return <String, dynamic>{};
+    }
+
+    final envelope = Map<String, dynamic>.from(decoded);
+
+    if (envelope['body'] is String) {
+      final nested = jsonDecode(envelope['body'] as String);
+      if (nested is Map) {
+        return Map<String, dynamic>.from(nested);
+      }
+    }
+
+    if (envelope['body'] is Map) {
+      return Map<String, dynamic>.from(envelope['body'] as Map);
+    }
+
+    return envelope;
+  }
+
+  Future<void> _fetchRenewalStatus({bool showLoader = true}) async {
+    if (widget.userId.trim().isEmpty) return;
+
+    if (showLoader && mounted) {
+      setState(() {
+        _isRenewalLoading = true;
+        _renewalError = '';
+      });
+    }
+
+    try {
+      final uri = Uri.parse(_getRenewalStatusApiUrl).replace(
+        queryParameters: {
+          'userID': widget.userId.trim(),
+        },
+      );
+
+      final response = await http.get(uri);
+
+      if (response.statusCode != 200) {
+        throw Exception(
+          'Unable to fetch renewal status (${response.statusCode})',
+        );
+      }
+
+      final body = _decodeApiBody(response.body);
+      final hasRenewal = body['success'] == true &&
+          body['hasRenewal'] == true &&
+          body['renewal'] is Map;
+
+      if (!mounted) return;
+
+      setState(() {
+        _renewal = hasRenewal
+            ? Map<String, dynamic>.from(body['renewal'] as Map)
+            : null;
+        _renewalError = '';
+        _isRenewalLoading = false;
+      });
+    } catch (e) {
+      debugPrint('Failed to fetch renewal status: $e');
+
+      if (!mounted) return;
+
+      setState(() {
+        _renewalError = e.toString();
+        _isRenewalLoading = false;
+      });
+    }
+  }
+
+  Future<void> _refreshAfterPaymentReturn() async {
+    if (_isRefreshingAfterPayment) return;
+
+    _isRefreshingAfterPayment = true;
+
+    try {
+      for (int attempt = 0; attempt < 3; attempt++) {
+        await _fetchRenewalStatus(showLoader: false);
+        await widget.onRefreshRequested();
+        await _refreshVisitStatuses();
+
+        if (_isRenewalPaid) {
+          break;
+        }
+
+        if (attempt < 2) {
+          await Future.delayed(const Duration(seconds: 3));
+        }
+      }
+
+      await _fetchUnpaidInvoices(showLoader: false);
+    } finally {
+      _isRefreshingAfterPayment = false;
+    }
+  }
+
+  bool _toBool(dynamic value, {bool defaultValue = false}) {
+    if (value == null) return defaultValue;
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+
+    final normalized = value.toString().trim().toLowerCase();
+
+    if (const {'true', '1', 'yes', 'y'}.contains(normalized)) {
+      return true;
+    }
+
+    if (const {'false', '0', 'no', 'n', ''}.contains(normalized)) {
+      return false;
+    }
+
+    return defaultValue;
+  }
+
+  bool get _hasRenewal => _renewal != null;
+
+  String get _renewalInvoiceStatus =>
+      (_renewal?['invoicePaymentStatus'] ?? '')
+          .toString()
+          .trim()
+          .toLowerCase();
+
+  String get _renewalServiceAccessStatus =>
+      (_renewal?['serviceAccessStatus'] ?? '')
+          .toString()
+          .trim()
+          .toLowerCase();
+
+  String get _renewalCurrentDealId =>
+      (_renewal?['currentDealID'] ?? '').toString().trim();
+
+  bool get _isRenewalPaid => _renewalInvoiceStatus == 'paid';
+
+  bool get _isRenewalPending =>
+      _hasRenewal && !_isRenewalPaid;
+
+  bool get _isRenewalBlockingApplicable =>
+      _toBool(_renewal?['paymentBlockingApplicable']);
+
+  bool get _isRenewalGraceMode =>
+      _isRenewalPending && _isRenewalBlockingApplicable;
+
+  bool get _isRenewalStopped =>
+      _renewalServiceAccessStatus == 'stopped';
+
+  int get _renewalTotalVisitCount =>
+      _toNum(_renewal?['totalVisitCount']).toInt();
+
+  int get _renewalVisibleVisitCount =>
+      _toNum(_renewal?['visibleVisitCount']).toInt();
+
+  int get _renewalHeldVisitCount =>
+      _toNum(_renewal?['heldVisitCount']).toInt();
+
+  String get _renewalInvoiceId =>
+      (_renewal?['invoiceID'] ?? '').toString().trim();
+
+  String get _renewalInvoiceNumber =>
+      (_renewal?['invoiceNumber'] ?? '').toString().trim();
+
+  String get _renewalPaymentUrl =>
+      (_renewal?['paymentUrl'] ?? '').toString().trim();
+
+  bool _isCurrentRenewalInvoice(Map<String, dynamic> invoice) {
+    final invoiceId = (
+        invoice['invoiceID'] ??
+            invoice['invoiceId'] ??
+            invoice['invoice_id'] ??
+            ''
+    ).toString().trim();
+
+    final invoiceNumber = (
+        invoice['invoiceNumber'] ??
+            invoice['invoice_number'] ??
+            ''
+    ).toString().trim();
+
+    if (_renewalInvoiceId.isNotEmpty &&
+        invoiceId.isNotEmpty &&
+        invoiceId == _renewalInvoiceId) {
+      return true;
+    }
+
+    return _renewalInvoiceNumber.isNotEmpty &&
+        invoiceNumber.isNotEmpty &&
+        invoiceNumber == _renewalInvoiceNumber;
+  }
+
+  List<Map<String, dynamic>> get _otherUnpaidInvoices {
+    return _unpaidInvoices
+        .where((invoice) => !_isCurrentRenewalInvoice(invoice))
+        .toList();
   }
 
   num _toNum(dynamic value) {
@@ -267,9 +868,9 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
       return;
     }
 
-    Future.delayed(const Duration(seconds: 10), () {
+    Future.delayed(const Duration(seconds: 2), () {
       if (!mounted) return;
-      _fetchUnpaidInvoices(showLoader: false);
+      unawaited(_refreshAfterPaymentReturn());
     });
   }
 
@@ -299,14 +900,21 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
     }).join(' ');
   }
 
-  num _totalPendingAmount() {
-    return _unpaidInvoices.fold<num>(
+  num _totalPendingAmount([
+    List<Map<String, dynamic>>? invoices,
+  ]) {
+    final source = invoices ?? _otherUnpaidInvoices;
+
+    return source.fold<num>(
       0,
           (sum, invoice) => sum + _toNum(invoice['balance']),
     );
   }
 
   void _showPendingInvoicesSheet() {
+    final invoices = _otherUnpaidInvoices;
+    if (invoices.isEmpty) return;
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -314,7 +922,7 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
       barrierColor: Colors.black.withOpacity(0.28),
       builder: (_) {
         return DraggableScrollableSheet(
-          initialChildSize: _unpaidInvoices.length > 2 ? 0.72 : 0.50,
+          initialChildSize: invoices.length > 2 ? 0.72 : 0.50,
           minChildSize: 0.38,
           maxChildSize: 0.88,
           expand: false,
@@ -377,7 +985,7 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
                                         ),
                                         const SizedBox(height: 4),
                                         Text(
-                                          '${_unpaidInvoices.length} invoice${_unpaidInvoices.length == 1 ? '' : 's'} • ${_formatCurrency(_totalPendingAmount())}',
+                                          '${invoices.length} invoice${invoices.length == 1 ? '' : 's'} • ${_formatCurrency(_totalPendingAmount(invoices))}',
                                           style: AppTextStyles.caption.copyWith(
                                             fontSize: 11,
                                             fontWeight: FontWeight.w700,
@@ -390,7 +998,7 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
                                 ],
                               ),
                               const SizedBox(height: 18),
-                              ..._unpaidInvoices.map(_pendingInvoiceTile),
+                              ...invoices.map(_pendingInvoiceTile),
                               const SizedBox(height: 14),
                               Text(
                                 'Payment may take a few minutes to reflect after completion.',
@@ -520,12 +1128,14 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
   }
 
   Widget _pendingPaymentWidget() {
-    if (_isUnpaidInvoiceLoading || _unpaidInvoices.isEmpty) {
+    final invoices = _otherUnpaidInvoices;
+
+    if (_isUnpaidInvoiceLoading || invoices.isEmpty) {
       return const SizedBox.shrink();
     }
 
-    final invoiceCount = _unpaidInvoices.length;
-    final amount = _totalPendingAmount();
+    final invoiceCount = invoices.length;
+    final amount = _totalPendingAmount(invoices);
 
     return Padding(
       padding: const EdgeInsets.only(top: 16),
@@ -560,7 +1170,7 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Payment Pending',
+                      'Other Payments Pending',
                       style: AppTextStyles.bodyLarge.copyWith(
                         fontWeight: FontWeight.w900,
                         color: _darkGreen,
@@ -569,8 +1179,8 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
                     const SizedBox(height: 4),
                     Text(
                       invoiceCount == 1
-                          ? 'You have 1 unpaid invoice of ${_formatCurrency(amount)}.'
-                          : 'You have $invoiceCount unpaid invoices of ${_formatCurrency(amount)}.',
+                          ? 'You have 1 other unpaid invoice of ${_formatCurrency(amount)}.'
+                          : 'You have $invoiceCount other unpaid invoices of ${_formatCurrency(amount)}.',
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: AppTextStyles.caption.copyWith(
@@ -584,7 +1194,10 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
               ),
               const SizedBox(width: 10),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
                   color: _gold,
                   borderRadius: BorderRadius.circular(16),
@@ -644,6 +1257,10 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
   }
 
   String _getCurrentCycleDealIdFromVisits(List<Map<String, dynamic>> rawVisits) {
+    if (_renewalCurrentDealId.isNotEmpty) {
+      return _renewalCurrentDealId;
+    }
+
     final today = DateTime(_now.year, _now.month, _now.day);
 
     final Map<String, List<Map<String, dynamic>>> groupedByDeal = {};
@@ -745,6 +1362,132 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
         s == 'service completed';
   }
 
+  String _rawVisitValue(
+      Map<String, dynamic> visit,
+      List<String> keys,
+      ) {
+    for (final key in keys) {
+      if (visit.containsKey(key)) {
+        final value = visit[key];
+        if (value != null) return value.toString();
+      }
+    }
+
+    final nestedBooking = visit['booking'];
+    if (nestedBooking is Map) {
+      final nested = Map<String, dynamic>.from(nestedBooking);
+      for (final key in keys) {
+        if (nested.containsKey(key)) {
+          final value = nested[key];
+          if (value != null) return value.toString();
+        }
+      }
+    }
+
+    return '';
+  }
+
+  bool _hasVisitControlField(
+      Map<String, dynamic> visit,
+      List<String> keys,
+      ) {
+    for (final key in keys) {
+      if (visit.containsKey(key)) return true;
+    }
+
+    final nestedBooking = visit['booking'];
+    if (nestedBooking is Map) {
+      for (final key in keys) {
+        if (nestedBooking.containsKey(key)) return true;
+      }
+    }
+
+    return false;
+  }
+
+  List<Map<String, dynamic>> _applyRenewalVisitVisibility(
+      List<Map<String, dynamic>> visits,
+      String currentCycleDealId,
+      ) {
+    // Once payment is received, every visit becomes active in the customer app.
+    if (!_isRenewalGraceMode) {
+      return visits
+          .map(
+            (visit) => <String, dynamic>{
+          ...visit,
+          'isFrozen': false,
+        },
+      )
+          .toList();
+    }
+
+    if (_renewalCurrentDealId.isNotEmpty &&
+        currentCycleDealId.isNotEmpty &&
+        currentCycleDealId != _renewalCurrentDealId) {
+      return visits
+          .map(
+            (visit) => <String, dynamic>{
+          ...visit,
+          'isFrozen': false,
+        },
+      )
+          .toList();
+    }
+
+    final graceTaskId =
+    (_renewal?['graceVisitTaskID'] ?? '').toString().trim();
+
+    bool isExplicitGraceVisit(Map<String, dynamic> visit) {
+      final taskId = (visit['taskID'] ?? '').toString().trim();
+      final cycleVisitNumber =
+      _toNum(visit['cycleVisitNumber']).toInt();
+
+      return visit['isGraceVisit'] == true ||
+          (graceTaskId.isNotEmpty && taskId == graceTaskId) ||
+          cycleVisitNumber == 1;
+    }
+
+    final hasControlledVisits = visits.any(
+          (visit) => visit['hasRenewalVisibilityControl'] == true,
+    );
+
+    if (hasControlledVisits) {
+      // Customer app behavior:
+      // show every next-cycle visit, but freeze held/hidden visits.
+      // visibleInMaaliApp still controls Maali access; it must not hide
+      // the schedule from the customer.
+      return visits.map((visit) {
+        final isGrace = isExplicitGraceVisit(visit);
+        final isHeld = visit['paymentHold'] == true;
+        final hiddenFromMaali = visit['visibleInMaaliApp'] == false;
+
+        return <String, dynamic>{
+          ...visit,
+          'isGraceVisit': isGrace,
+          'isFrozen': !isGrace && (isHeld || hiddenFromMaali),
+        };
+      }).toList();
+    }
+
+    final explicitGraceIndex =
+    visits.indexWhere(isExplicitGraceVisit);
+
+    final activeGraceIndex = explicitGraceIndex >= 0
+        ? explicitGraceIndex
+        : (visits.isNotEmpty ? 0 : -1);
+
+    // Legacy fallback where the backend has not yet added hold flags:
+    // show all visits, keep the grace visit active, freeze the rest.
+    return List<Map<String, dynamic>>.generate(
+      visits.length,
+          (index) => <String, dynamic>{
+        ...visits[index],
+        'isGraceVisit': index == activeGraceIndex,
+        'isFrozen': index != activeGraceIndex,
+      },
+    );
+  }
+
   List<Map<String, dynamic>> _buildScheduledVisits() {
     final List<Map<String, dynamic>> visits = [];
 
@@ -754,7 +1497,7 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
       DateTime.now().day,
     );
 
-    final rawScheduledVisits = widget.booking['allScheduledVisits'];
+    final rawScheduledVisits = _booking['allScheduledVisits'];
 
     if (rawScheduledVisits is List && rawScheduledVisits.isNotEmpty) {
       final rawVisits = rawScheduledVisits
@@ -762,21 +1505,27 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
           .map((e) => Map<String, dynamic>.from(e))
           .toList();
 
-      String currentCycleDealId = (
-          widget.booking['currentCycleDealID'] ??
-              widget.booking['dealID'] ??
-              widget.booking['dealId'] ??
-              widget.booking['deal_id'] ??
-              widget.booking['Deal_ID'] ??
-              ''
-      ).toString().trim();
+      String currentCycleDealId = _renewalCurrentDealId;
+
+      if (currentCycleDealId.isEmpty) {
+        currentCycleDealId = (
+            _booking['currentCycleDealID'] ??
+                _booking['dealID'] ??
+                _booking['dealId'] ??
+                _booking['deal_id'] ??
+                _booking['Deal_ID'] ??
+                ''
+        ).toString().trim();
+      }
 
       if (currentCycleDealId.isEmpty) {
         currentCycleDealId = _getCurrentCycleDealIdFromVisits(rawVisits);
       }
 
       debugPrint('🧾 Total raw visits received: ${rawVisits.length}');
-      debugPrint('🧾 Filtering visits for current cycle dealID: $currentCycleDealId');
+      debugPrint(
+        '🧾 Filtering visits for current cycle dealID: $currentCycleDealId',
+      );
 
       for (final visit in rawVisits) {
         final visitDealId = _readVisitValue(
@@ -789,8 +1538,6 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
           ],
         );
 
-        // If dealID exists, show only current cycle visits.
-        // If dealID is missing in data, do not block the visit.
         if (currentCycleDealId.isNotEmpty &&
             visitDealId.isNotEmpty &&
             visitDealId != currentCycleDealId) {
@@ -831,10 +1578,52 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
             ? Map<String, dynamic>.from(visit['booking'] as Map)
             : Map<String, dynamic>.from(visit);
 
+        final ddbDueDate = _visitDdbDueDateValue(visit);
+
+        final paymentHoldKeys = const [
+          'paymentHold',
+          'Payment_Hold',
+        ];
+        final visibilityKeys = const [
+          'visibleInMaaliApp',
+          'Visible_In_Maali_App',
+        ];
+
+        final paymentHoldRaw = _rawVisitValue(
+          visit,
+          paymentHoldKeys,
+        );
+        final visibleRaw = _rawVisitValue(
+          visit,
+          visibilityKeys,
+        );
+
+        final hasVisibilityControl = _hasVisitControlField(
+          visit,
+          paymentHoldKeys,
+        ) ||
+            _hasVisitControlField(
+              visit,
+              visibilityKeys,
+            );
+
         visits.add({
+          // Display date.
           'date': date,
           'dueDate': date,
+
+          // Exact DynamoDB sort key.
+          'ddbDueDate': ddbDueDate,
+
           'dealID': visitDealId,
+          'taskID': _readVisitValue(
+            visit,
+            [
+              'taskID',
+              'taskId',
+              'Task_ID',
+            ],
+          ),
           'mali': _readVisitValue(
             visit,
             [
@@ -869,41 +1658,91 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
           ),
           'status': visitStatus,
           'isDone': isDone,
+          'feedbackEligible': _isVisitDoneFromStatus(
+            (
+                nestedBooking['status'] ??
+                    nestedBooking['taskStatus'] ??
+                    nestedBooking['visitStatus'] ??
+                    visitStatus
+            ).toString(),
+          ),
+          'feedbackSubmitted': _feedbackSubmittedValue(
+            nestedBooking['feedbackSubmitted'],
+          ),
+          'feedbackId': (
+              nestedBooking['feedbackId'] ?? ''
+          ).toString(),
+          'feedbackRating': nestedBooking['feedbackRating'],
+          'bookingID': _readVisitValue(
+            visit,
+            [
+              'bookingID',
+              'bookingId',
+              'visitID',
+            ],
+          ),
           'booking': nestedBooking,
           'isPast': visitDate.isBefore(today),
           'isToday': visitDate.isAtSameMomentAs(today),
           'isFuture': visitDate.isAfter(today),
           'visitDate': visitDate,
+          'isGraceVisit': _toBool(
+            _rawVisitValue(
+              visit,
+              const ['isGraceVisit', 'Is_Grace_Visit'],
+            ),
+          ),
+          'paymentHold': _toBool(paymentHoldRaw),
+          'visibleInMaaliApp': visibleRaw.trim().isEmpty
+              ? true
+              : _toBool(visibleRaw, defaultValue: true),
+          'hasRenewalVisibilityControl': hasVisibilityControl,
+          'cycleVisitNumber': _toNum(
+            _rawVisitValue(
+              visit,
+              const ['cycleVisitNumber', 'Cycle_Visit_Number'],
+            ),
+          ).toInt(),
         });
       }
 
-      visits.sort((a, b) =>
-          (a['visitDate'] as DateTime).compareTo(b['visitDate'] as DateTime));
+      visits.sort(
+            (a, b) => (a['visitDate'] as DateTime)
+            .compareTo(b['visitDate'] as DateTime),
+      );
 
-      debugPrint('✅ Current cycle visits shown: ${visits.length}');
+      final visibleVisits = _applyRenewalVisitVisibility(
+        visits,
+        currentCycleDealId,
+      );
 
-      for (final visit in visits) {
+      debugPrint(
+        '✅ Current cycle visits shown: ${visibleVisits.length}',
+      );
+
+      for (final visit in visibleVisits) {
         debugPrint(
           '✅ Visit shown => date=${visit['date']}, '
               'dealID=${visit['dealID']}, '
               'status=${visit['status']}, '
-              'isDone=${visit['isDone']}, '
-              'mali=${visit['mali']}',
+              'grace=${visit['isGraceVisit']}, '
+              'hold=${visit['paymentHold']}, '
+              'visible=${visit['visibleInMaaliApp']}',
         );
       }
 
-      return visits;
+      return visibleVisits;
     }
 
-    final bookedDates = (widget.booking['bookedDates'] as List<dynamic>?)
+    final bookedDates = (_booking['bookedDates'] as List<dynamic>?)
         ?.map((e) => e.toString())
         .toList() ??
         [];
 
     final dayTimeSlots =
-        (widget.booking['dayTimeSlots'] as List<dynamic>?) ?? [];
+        (_booking['dayTimeSlots'] as List<dynamic>?) ?? [];
 
-    final assignedMali = widget.booking['assignedMali'] ?? 'Not assigned';
+    final assignedMali = _booking['assignedMali'] ?? 'Not assigned';
 
     String timeSlot = 'N/A';
     if (dayTimeSlots.isNotEmpty && dayTimeSlots.first is Map) {
@@ -911,42 +1750,88 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
       timeSlot = (firstSlot['timeSlot'] ?? 'N/A').toString();
     }
 
-    for (final date in bookedDates) {
+    for (int index = 0; index < bookedDates.length; index++) {
+      final date = bookedDates[index];
       final visitDate = _parseVisitDate(date);
       if (visitDate == null) continue;
 
-      final visitStatus = (widget.booking['taskStatus'] ??
-          widget.booking['TaskStatus'] ??
-          widget.booking['task_status'] ??
-          widget.booking['status'] ??
-          widget.booking['bookingStatus'] ??
-          widget.booking['visitStatus'] ??
-          widget.booking['serviceStatus'] ??
-          '')
-          .toString()
-          .trim();
+      final visitStatus = (
+          _booking['taskStatus'] ??
+              _booking['TaskStatus'] ??
+              _booking['task_status'] ??
+              _booking['status'] ??
+              _booking['bookingStatus'] ??
+              _booking['visitStatus'] ??
+              _booking['serviceStatus'] ??
+              ''
+      ).toString().trim();
 
       final isDone = _isVisitDoneFromStatus(visitStatus);
 
       visits.add({
         'date': date,
         'dueDate': date,
+        'ddbDueDate': _toDdbDueDate(date),
+        'dealID': (
+            _booking['currentCycleDealID'] ??
+                _booking['dealID'] ??
+                ''
+        ).toString(),
+        'taskID': '',
         'mali': assignedMali,
         'timeSlot': timeSlot,
         'status': visitStatus,
         'isDone': isDone,
-        'booking': widget.booking,
+        'feedbackEligible': _isVisitDoneFromStatus(
+          (
+              _booking['status'] ??
+                  _booking['taskStatus'] ??
+                  _booking['visitStatus'] ??
+                  visitStatus
+          ).toString(),
+        ),
+        'feedbackSubmitted': _feedbackSubmittedValue(
+          _booking['feedbackSubmitted'],
+        ),
+        'feedbackId': (
+            _booking['feedbackId'] ?? ''
+        ).toString(),
+        'feedbackRating': _booking['feedbackRating'],
+        'bookingID': (
+            _booking['bookingID'] ??
+                _booking['bookingId'] ??
+                ''
+        ).toString(),
+        'booking': _booking,
         'isPast': visitDate.isBefore(today),
         'isToday': visitDate.isAtSameMomentAs(today),
         'isFuture': visitDate.isAfter(today),
         'visitDate': visitDate,
+        'isGraceVisit': index == 0,
+        'paymentHold': false,
+        'visibleInMaaliApp': true,
+        'hasRenewalVisibilityControl': false,
+        'cycleVisitNumber': index + 1,
       });
     }
 
-    visits.sort((a, b) =>
-        (a['visitDate'] as DateTime).compareTo(b['visitDate'] as DateTime));
+    visits.sort(
+          (a, b) => (a['visitDate'] as DateTime)
+          .compareTo(b['visitDate'] as DateTime),
+    );
 
-    return visits;
+    final fallbackDealId = _renewalCurrentDealId.isNotEmpty
+        ? _renewalCurrentDealId
+        : (
+        _booking['currentCycleDealID'] ??
+            _booking['dealID'] ??
+            ''
+    ).toString();
+
+    return _applyRenewalVisitVisibility(
+      visits,
+      fallbackDealId,
+    );
   }
 
   DateTime? _parseVisitDate(String dateStr) {
@@ -1010,14 +1895,26 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
 
   int _defaultSelectedIndex(List<Map<String, dynamic>> visits) {
     if (_selectedDateIndex >= 0 && _selectedDateIndex < visits.length) {
-      return _selectedDateIndex;
+      final selectedVisit = visits[_selectedDateIndex];
+
+      if (selectedVisit['isFrozen'] != true) {
+        return _selectedDateIndex;
+      }
     }
 
-    final nextIndex = visits.indexWhere((visit) {
-      return visit['isToday'] == true || visit['isFuture'] == true;
+    final nextActiveIndex = visits.indexWhere((visit) {
+      final isUpcoming =
+          visit['isToday'] == true || visit['isFuture'] == true;
+      return isUpcoming && visit['isFrozen'] != true;
     });
 
-    if (nextIndex >= 0) return nextIndex;
+    if (nextActiveIndex >= 0) return nextActiveIndex;
+
+    final firstActiveIndex = visits.indexWhere(
+          (visit) => visit['isFrozen'] != true,
+    );
+
+    if (firstActiveIndex >= 0) return firstActiveIndex;
     return visits.isNotEmpty ? 0 : -1;
   }
 
@@ -1190,8 +2087,8 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
   void _openOrdersScreen() {
     String bookingDate = '';
 
-    if (widget.booking['bookingType'] == 'monthlySubscription') {
-      final rawDates = widget.booking['bookedDates'] as List<dynamic>? ?? [];
+    if (_booking['bookingType'] == 'monthlySubscription') {
+      final rawDates = _booking['bookedDates'] as List<dynamic>? ?? [];
       final cleanedDates = rawDates.map((e) => e.toString()).toList();
 
       cleanedDates.sort((a, b) {
@@ -1215,14 +2112,14 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
         bookingDate = cleanedDates.last;
       }
     } else {
-      bookingDate = widget.booking['date']?.toString() ?? '';
+      bookingDate = _booking['date']?.toString() ?? '';
     }
 
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => ViewProductsForBookingScreen(
-          bookingID: widget.booking['bookingID'],
+          bookingID: _booking['bookingID'],
           date: bookingDate,
           userID: widget.userId,
         ),
@@ -1271,7 +2168,7 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
 
               try {
                 await widget.onSkipWeek(
-                  booking: widget.booking,
+                  booking: _booking,
                   dueDate: dueDate,
                 );
 
@@ -1366,13 +2263,13 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
         builder: (_) => RescheduleBookingScreen(
           userId: widget.userId,
           userName: widget.userName,
-          booking: widget.booking,
+          booking: _booking,
           oldDate: '${parts[0]}-${parts[1]}-${parts[2].substring(2)}',
           assignedMaliId: (
-              widget.booking['maaliNo'] ??
-                  widget.booking['maliNo'] ??
-                  widget.booking['assignedMaliId'] ??
-                  widget.booking['assignedMaaliId'] ??
+              _booking['maaliNo'] ??
+                  _booking['maliNo'] ??
+                  _booking['assignedMaliId'] ??
+                  _booking['assignedMaaliId'] ??
                   ''
           ).toString(),
         ),
@@ -1418,11 +2315,11 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
       MaterialPageRoute(
         builder: (_) => AddProductsForNextVisitScreen(
           userID: widget.userId,
-          bookingID: (widget.booking['bookingID'] ?? '').toString(),
+          bookingID: (_booking['bookingID'] ?? '').toString(),
           visitDate: bookingDate,
           cartItems: _copyCartItems(_cart),
           fetchCatalogUrl: widget.fetchCatalogUrl,
-          assignedMali: widget.booking['assignedMali']?.toString() ?? '',
+          assignedMali: _booking['assignedMali']?.toString() ?? '',
           onCartUpdated: (updatedCart) {
             final copiedCart = _copyCartItems(updatedCart);
 
@@ -1471,15 +2368,15 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
   }
 
   Future<void> _cancelPlan() async {
-    final bookingID = (widget.booking['bookingID'] ??
-        widget.booking['bookingId'] ??
-        widget.booking['id'] ??
+    final bookingID = (_booking['bookingID'] ??
+        _booking['bookingId'] ??
+        _booking['id'] ??
         '')
         .toString();
 
-    final dueDate = (widget.booking['dueDate'] ??
-        widget.booking['date'] ??
-        widget.booking['nextFutureDate'] ??
+    final dueDate = (_booking['dueDate'] ??
+        _booking['date'] ??
+        _booking['nextFutureDate'] ??
         '')
         .toString();
 
@@ -1656,14 +2553,61 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
   }) {
     final visitStats = _getVisitProgressStats(visits);
 
-    final totalVisits = visitStats['totalVisits'] as int;
-    final completedVisits = visitStats['completedVisits'] as int;
-    final remainingVisits = visitStats['remainingVisits'] as int;
-    final progress = visitStats['progress'] as double;
+    final backendTotal = _renewalTotalVisitCount;
+    final totalVisits = backendTotal > 0
+        ? backendTotal
+        : visitStats['totalVisits'] as int;
+
+    final completedVisits = visits.where((visit) {
+      return visit['isDone'] == true;
+    }).length;
+
+    final remainingVisits =
+    (totalVisits - completedVisits).clamp(0, totalVisits);
+
+    final progress = totalVisits == 0
+        ? 0.0
+        : completedVisits / totalVisits;
+
     final progressPercent = (progress * 100).round();
 
-    final upcomingText =
-    isExpired ? 'Cycle completed' : _getUpcomingVisitLabel(upcomingVisit);
+    final String chipLabel;
+    final String upcomingTitle;
+    final String upcomingText;
+    final String remainingText;
+
+    if (_isRenewalStopped) {
+      chipLabel = 'Payment Due';
+      upcomingTitle = 'SERVICE STATUS';
+      upcomingText = 'Pay now to unlock the remaining visits';
+      remainingText = 'Visits paused';
+    } else if (_isRenewalGraceMode) {
+      chipLabel = 'Grace Active';
+      upcomingTitle = 'GRACE VISIT';
+      upcomingText = upcomingVisit == null
+          ? 'One grace visit is being scheduled'
+          : _getUpcomingVisitLabel(upcomingVisit);
+      remainingText = '1 grace visit available';
+    } else if (_isRenewalPaid) {
+      chipLabel = 'Active';
+      upcomingTitle = 'NEXT VISIT';
+      upcomingText = _getUpcomingVisitLabel(upcomingVisit);
+      remainingText = remainingVisits == 1
+          ? '1 visit left'
+          : '$remainingVisits visits left';
+    } else {
+      chipLabel = isExpired
+          ? 'Renewal Due'
+          : (status.isEmpty ? 'Active' : status);
+      upcomingTitle = isExpired ? 'NEXT ACTION' : 'NEXT VISIT';
+      upcomingText =
+      isExpired ? 'Cycle completed' : _getUpcomingVisitLabel(upcomingVisit);
+      remainingText = isExpired
+          ? 'Cycle completed'
+          : remainingVisits == 1
+          ? '1 visit left'
+          : '$remainingVisits visits left';
+    }
 
     return Container(
       width: double.infinity,
@@ -1696,15 +2640,20 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
                 ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 9,
+                  vertical: 5,
+                ),
                 decoration: BoxDecoration(
-                  color: isExpired
+                  color: _isRenewalStopped
+                      ? Colors.red.withOpacity(0.26)
+                      : _isRenewalGraceMode || isExpired
                       ? Colors.orange.withOpacity(0.25)
                       : Colors.white.withOpacity(0.20),
                   borderRadius: BorderRadius.circular(14),
                 ),
                 child: Text(
-                  isExpired ? 'Renewal Due' : (status.isEmpty ? 'Active' : status),
+                  chipLabel,
                   style: AppTextStyles.chip.copyWith(
                     fontWeight: FontWeight.w800,
                     color: Colors.white,
@@ -1732,11 +2681,7 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
               ),
               const Spacer(),
               Text(
-                isExpired
-                    ? 'Cycle completed'
-                    : remainingVisits == 1
-                    ? '1 visit left'
-                    : '$remainingVisits visits left',
+                remainingText,
                 style: AppTextStyles.chip.copyWith(
                   fontWeight: FontWeight.w700,
                   color: Colors.white,
@@ -1752,7 +2697,7 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
               minHeight: 5,
               backgroundColor: Colors.white.withOpacity(0.20),
               valueColor: AlwaysStoppedAnimation<Color>(
-                isExpired ? Colors.orange : _gold,
+                _isRenewalStopped ? Colors.redAccent : _gold,
               ),
             ),
           ),
@@ -1775,7 +2720,11 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
             child: Row(
               children: [
                 Icon(
-                  isExpired
+                  _isRenewalStopped
+                      ? Icons.lock_clock_rounded
+                      : _isRenewalGraceMode
+                      ? Icons.card_giftcard_rounded
+                      : isExpired
                       ? Icons.restart_alt_rounded
                       : Icons.event_available_rounded,
                   color: _gold,
@@ -1787,7 +2736,7 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        isExpired ? 'NEXT ACTION' : 'NEXT VISIT',
+                        upcomingTitle,
                         style: AppTextStyles.tiny.copyWith(
                           letterSpacing: 1.2,
                           fontWeight: FontWeight.w800,
@@ -1845,7 +2794,7 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
     final selectedIndex = _defaultSelectedIndex(visits);
 
     return SizedBox(
-      height: 96,
+      height: 114,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 2),
@@ -1858,68 +2807,106 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
           final isSelected = selectedIndex == index;
           final isToday = visit['isToday'] == true;
           final isDone = visit['isDone'] == true;
+          final isFrozen = visit['isFrozen'] == true;
+          final isGraceVisit = visit['isGraceVisit'] == true;
+          final isFeedbackSubmitted =
+          _feedbackSubmittedValue(
+            visit['feedbackSubmitted'],
+          );
 
-          String topLabel;
+          final String statusLabel;
+          final IconData statusIcon;
+          final Color statusColor;
 
-          if (isDone) {
-            topLabel = 'Done';
+          if (isDone && isFeedbackSubmitted) {
+            statusLabel = 'Rated';
+            statusIcon = Icons.star_rounded;
+            statusColor = _gold;
+          } else if (isDone) {
+            statusLabel = 'Done';
+            statusIcon = Icons.check_circle_rounded;
+            statusColor = Colors.red.shade600;
+          } else if (isFrozen) {
+            statusLabel = 'Frozen';
+            statusIcon = Icons.lock_rounded;
+            statusColor = Colors.grey.shade600;
+          } else if (isGraceVisit && _isRenewalGraceMode) {
+            statusLabel = 'Grace';
+            statusIcon = Icons.card_giftcard_rounded;
+            statusColor = _gold;
           } else if (isToday) {
-            topLabel = 'Today';
+            statusLabel = 'Today';
+            statusIcon = Icons.event_available_rounded;
+            statusColor = _gold;
           } else {
-            topLabel = _dateTabTitleForVisit(date);
+            statusLabel = 'Active';
+            statusIcon = Icons.event_available_rounded;
+            statusColor = isSelected ? _gold : _darkGreen;
           }
 
-          final bottomLabel = isDone
-              ? _dateTabTitleForVisit(date)
-              : isToday
-              ? _weekdayShort(date)
-              : _weekdayShort(date);
-
-          final highlightColor = isDone
-              ? Colors.red.shade600
-              : isSelected || isToday
-              ? _gold
-              : AppColors.primaryColor;
-
-          final subTextColor = isDone
-              ? Colors.red.shade400
-              : isSelected || isToday
-              ? _gold
-              : AppColors.textSecondary;
-
           return GestureDetector(
-            onTap: () => setState(() => _selectedDateIndex = index),
-            child: SizedBox(
-              width: 82,
-              child: LiquidGlassInstructionCard(
-                radius: 24,
-                minHeight: 88,
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      topLabel,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.center,
-                      style: AppTextStyles.bodyLarge.copyWith(
-                        fontWeight: FontWeight.w900,
-                        color: highlightColor,
+            onTap: isFrozen
+                ? null
+                : () => setState(() => _selectedDateIndex = index),
+            child: Opacity(
+              opacity: isFrozen ? 0.68 : 1,
+              child: SizedBox(
+                width: 94,
+                child: LiquidGlassInstructionCard(
+                  radius: 24,
+                  minHeight: 106,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 10,
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        statusIcon,
+                        size: 17,
+                        color: statusColor,
                       ),
-                    ),
-                    const SizedBox(height: 5),
-                    Text(
-                      bottomLabel,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.center,
-                      style: AppTextStyles.caption.copyWith(
-                        fontWeight: FontWeight.w800,
-                        color: subTextColor,
+                      const SizedBox(height: 4),
+                      Text(
+                        statusLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: AppTextStyles.tiny.copyWith(
+                          fontWeight: FontWeight.w900,
+                          color: statusColor,
+                        ),
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 5),
+                      Text(
+                        _dateTabTitleForVisit(date),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: AppTextStyles.body.copyWith(
+                          fontWeight: FontWeight.w900,
+                          color: isFrozen
+                              ? Colors.grey.shade700
+                              : isSelected
+                              ? _gold
+                              : _darkGreen,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        _weekdayShort(date),
+                        maxLines: 1,
+                        textAlign: TextAlign.center,
+                        style: AppTextStyles.tiny.copyWith(
+                          fontWeight: FontWeight.w800,
+                          color: isFrozen
+                              ? Colors.grey.shade500
+                              : AppColors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -2536,27 +3523,27 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
 
 
   Widget _assignedExpertCard(String assignedMali) {
-    final societyCount = (widget.booking['societyCount'] ??
-        widget.booking['societies'] ??
-        widget.booking['assignedSocieties'] ??
+    final societyCount = (_booking['societyCount'] ??
+        _booking['societies'] ??
+        _booking['assignedSocieties'] ??
         '121')
         .toString();
 
-    final maaliId = (widget.booking['maaliNo'] ??
-        widget.booking['maaliID'] ??
-        widget.booking['maliNo'] ??
-        widget.booking['maliID'] ??
-        widget.booking['assignedMaliId'] ??
-        widget.booking['assignedMaliID'] ??
-        widget.booking['assignedMaaliId'] ??
-        widget.booking['assignedMaaliID'] ??
-        widget.booking['maaliId'] ??
-        widget.booking['maaliID'] ??
+    final maaliId = (_booking['maaliNo'] ??
+        _booking['maaliID'] ??
+        _booking['maliNo'] ??
+        _booking['maliID'] ??
+        _booking['assignedMaliId'] ??
+        _booking['assignedMaliID'] ??
+        _booking['assignedMaaliId'] ??
+        _booking['assignedMaaliID'] ??
+        _booking['maaliId'] ??
+        _booking['maaliID'] ??
         '')
         .toString();
 
     debugPrint('🧑‍🌾 Assigned maali name: $assignedMali');
-    debugPrint('🧑‍🌾 Booking maali raw fields: ${widget.booking}');
+    debugPrint('🧑‍🌾 Booking maali raw fields: ${_booking}');
     debugPrint('🧑‍🌾 Extracted maaliId: $maaliId');
 
     final maaliPhotoUrl = _getMaaliPhotoUrl(maaliId, assignedMali);
@@ -2930,133 +3917,364 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
     );
   }
 
-  Widget _expiredPlanActionsCard(List<Map<String, dynamic>> visits) {
-    final renewalDates = _buildNextRenewalDates(visits);
-    final amount =
-    (widget.booking['bookingAmount'] ?? widget.booking['monthlyAmount'] ?? '')
-        .toString();
+  DateTime? _parseFlexibleDate(dynamic value) {
+    final text = value?.toString().trim() ?? '';
+    if (text.isEmpty) return null;
 
-    final planName = (widget.booking['planName'] ?? 'Current Plan').toString();
+    final isoDate = DateTime.tryParse(text);
+    if (isoDate != null) return isoDate;
 
-    return _softCard(
-      radius: 22,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Your subscription cycle is complete',
-            style: AppTextStyles.cardTitle.copyWith(color: _darkGreen),
+    return _parseVisitDate(text);
+  }
+
+  String _formatRenewalDate(dynamic value) {
+    final date = _parseFlexibleDate(value);
+    if (date == null) return '';
+
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+
+    return '${date.day} ${months[date.month - 1]} ${date.year}';
+  }
+
+  String _renewalPeriodText() {
+    final start = _formatRenewalDate(_renewal?['cycleStartDate']);
+    final end = _formatRenewalDate(_renewal?['cycleEndDate']);
+
+    if (start.isNotEmpty && end.isNotEmpty) {
+      return '$start – $end';
+    }
+
+    if (start.isNotEmpty) return 'From $start';
+    if (end.isNotEmpty) return 'Until $end';
+    return '';
+  }
+
+  Future<void> _payRenewal() async {
+    if (_renewalPaymentUrl.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'The renewal payment link is not available yet. Please try again shortly.',
           ),
-          const SizedBox(height: 8),
-          Text(
-            'Renew your plan to continue weekly garden care, or cancel this plan to stop showing it as active.',
-            style: AppTextStyles.body.copyWith(
-              height: 1.45,
-              color: AppColors.textSecondary,
-            ),
+        ),
+      );
+      return;
+    }
+
+    await _openPaymentUrl(_renewalPaymentUrl);
+  }
+
+  Widget _renewalStatusCard() {
+    if (_isRenewalLoading && _renewal == null) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 16),
+        child: _softCard(
+          radius: 22,
+          child: const Row(
+            children: [
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              SizedBox(width: 12),
+              Expanded(
+                child: Text('Checking renewal status...'),
+              ),
+            ],
           ),
-          const SizedBox(height: 18),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: const Color(0xFFEAF8EF),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: _darkGreen.withOpacity(0.10)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Renew $planName',
-                  style: AppTextStyles.title.copyWith(color: _darkGreen),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  amount.isEmpty
-                      ? 'Next 4 visits'
-                      : 'Amount: ₹$amount • Next 4 visits',
-                  style: AppTextStyles.small.copyWith(
+        ),
+      );
+    }
+
+    if (_renewal == null) {
+      if (_renewalError.isEmpty) {
+        return const SizedBox.shrink();
+      }
+
+      return Padding(
+        padding: const EdgeInsets.only(top: 16),
+        child: _softCard(
+          radius: 22,
+          child: Row(
+            children: [
+              const Icon(
+                Icons.cloud_off_rounded,
+                color: Colors.orange,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Renewal status could not be refreshed.',
+                  style: AppTextStyles.body.copyWith(
                     color: AppColors.textSecondary,
-                    fontWeight: FontWeight.w500,
+                    fontWeight: FontWeight.w700,
                   ),
                 ),
-                const SizedBox(height: 12),
-                Column(
-                  children: renewalDates.map((date) {
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.event_available_rounded, size: 17, color: _darkGreen),
-                          const SizedBox(width: 8),
-                          Text(
-                            _formatReadableDate(date),
-                            style: AppTextStyles.body.copyWith(
-                              fontWeight: FontWeight.w700,
-                              color: AppColors.textPrimary,
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 10),
-                SizedBox(
-                  width: double.infinity,
+              ),
+              TextButton(
+                onPressed: () => _fetchRenewalStatus(),
+                child: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final amount = _toNum(_renewal?['amount']);
+    final period = _renewalPeriodText();
+    final invoiceNumber = _renewalInvoiceNumber;
+
+    final String title;
+    final String message;
+    final IconData icon;
+    final Color iconBackground;
+    final Color iconColor;
+
+    if (_isRenewalPaid) {
+      title = 'Renewal payment received';
+      message = _renewalTotalVisitCount > 0
+          ? 'All ${_renewalTotalVisitCount} visits in your renewed cycle are unlocked.'
+          : 'Your renewed subscription is active and all visits are unlocked.';
+      icon = Icons.verified_rounded;
+      iconBackground = const Color(0xFFEAF8EF);
+      iconColor = _darkGreen;
+    } else if (_isRenewalStopped) {
+      title = 'Grace visit completed';
+      message = _renewalHeldVisitCount > 0
+          ? 'Your remaining ${_renewalHeldVisitCount} visits are paused. Complete payment to unlock them.'
+          : 'Your remaining visits are paused. Complete payment to unlock them.';
+      icon = Icons.lock_clock_rounded;
+      iconBackground = const Color(0xFFFFE3E3);
+      iconColor = const Color(0xFFC93535);
+    } else if (_isRenewalGraceMode) {
+      title = 'One grace visit is available';
+      message = _renewalHeldVisitCount > 0
+          ? 'Complete the renewal payment to unlock the remaining ${_renewalHeldVisitCount} visits.'
+          : 'Complete the renewal payment to unlock all remaining visits.';
+      icon = Icons.card_giftcard_rounded;
+      iconBackground = const Color(0xFFFFF2D7);
+      iconColor = const Color(0xFF9B6500);
+    } else {
+      title = 'Renewal payment pending';
+      message =
+      'Your visits will continue. Please complete the renewal payment.';
+      icon = Icons.receipt_long_rounded;
+      iconBackground = const Color(0xFFFFF2D7);
+      iconColor = const Color(0xFF9B6500);
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: _softCard(
+        radius: 24,
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 48,
                   height: 48,
-                  child: ElevatedButton(
-                    onPressed: () => _startRenewalPayment(renewalDates),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: _darkGreen,
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(24),
+                  decoration: BoxDecoration(
+                    color: iconBackground,
+                    borderRadius: BorderRadius.circular(17),
+                  ),
+                  child: Icon(
+                    icon,
+                    color: iconColor,
+                    size: 27,
+                  ),
+                ),
+                const SizedBox(width: 13),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: AppTextStyles.bodyLarge.copyWith(
+                          fontWeight: FontWeight.w900,
+                          color: _darkGreen,
+                        ),
                       ),
-                    ),
-                    child: Text(
-                      'Make Payment & Renew',
-                      style: AppTextStyles.bodyLarge.copyWith(
-                        fontWeight: FontWeight.w800,
-                        color: Colors.white,
+                      const SizedBox(height: 5),
+                      Text(
+                        message,
+                        style: AppTextStyles.caption.copyWith(
+                          color: AppColors.textSecondary,
+                          fontWeight: FontWeight.w600,
+                          height: 1.35,
+                        ),
                       ),
-                    ),
+                    ],
                   ),
                 ),
               ],
             ),
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            height: 46,
-            child: OutlinedButton(
-              onPressed: _isCancellingPlan ? null : _cancelPlan,
-              style: OutlinedButton.styleFrom(
-                foregroundColor: Colors.red,
-                side: const BorderSide(color: Colors.red),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(23),
+            if (invoiceNumber.isNotEmpty ||
+                amount > 0 ||
+                period.isNotEmpty) ...[
+              const SizedBox(height: 15),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(13),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF7FAF8),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: _darkGreen.withOpacity(0.08),
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    if (invoiceNumber.isNotEmpty)
+                      _renewalDetailRow(
+                        'Invoice',
+                        invoiceNumber,
+                      ),
+                    if (invoiceNumber.isNotEmpty &&
+                        (amount > 0 || period.isNotEmpty))
+                      const SizedBox(height: 8),
+                    if (amount > 0)
+                      _renewalDetailRow(
+                        'Amount',
+                        _formatCurrency(amount),
+                      ),
+                    if (amount > 0 && period.isNotEmpty)
+                      const SizedBox(height: 8),
+                    if (period.isNotEmpty)
+                      _renewalDetailRow(
+                        'Renewal period',
+                        period,
+                      ),
+                  ],
                 ),
               ),
-              child: _isCancellingPlan
-                  ? const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.red,
+            ],
+            if (_isRenewalPending) ...[
+              const SizedBox(height: 14),
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: ElevatedButton.icon(
+                  onPressed: _renewalPaymentUrl.isEmpty
+                      ? null
+                      : _payRenewal,
+                  icon: const Icon(
+                    Icons.lock_open_rounded,
+                    size: 18,
+                  ),
+                  label: Text(
+                    amount > 0
+                        ? 'Pay ${_formatCurrency(amount)} & Unlock Visits'
+                        : 'Pay Now & Unlock Visits',
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _gold,
+                    foregroundColor: Colors.black,
+                    disabledBackgroundColor: Colors.grey.shade300,
+                    disabledForegroundColor: Colors.grey.shade600,
+                    elevation: 0,
+                    shadowColor: Colors.transparent,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                  ),
                 ),
-              )
-                  : Text(
-                'Cancel Plan',
-                style: AppTextStyles.bodyLarge.copyWith(
-                  fontWeight: FontWeight.w800,
-                  color: Colors.red,
+              ),
+              if (_renewalPaymentUrl.isEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Payment link is being prepared. Pull down to refresh shortly.',
+                  textAlign: TextAlign.center,
+                  style: AppTextStyles.tiny.copyWith(
+                    color: AppColors.textSecondary,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
+              ],
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _renewalDetailRow(String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Text(
+            label,
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.textSecondary,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Flexible(
+          child: Text(
+            value,
+            textAlign: TextAlign.right,
+            style: AppTextStyles.caption.copyWith(
+              color: _darkGreen,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _renewalPreparingCard() {
+    return _softCard(
+      radius: 22,
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFF2D7),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: const Icon(
+              Icons.schedule_rounded,
+              color: Color(0xFF9B6500),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'Your renewal cycle is being prepared. Pull down to refresh shortly.',
+              style: AppTextStyles.body.copyWith(
+                color: AppColors.textSecondary,
+                fontWeight: FontWeight.w700,
+                height: 1.35,
               ),
             ),
           ),
@@ -3077,19 +4295,306 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
     );
   }*/
 
+  bool _feedbackSubmittedValue(dynamic value) {
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+
+    final normalized =
+        value?.toString().trim().toLowerCase() ?? '';
+
+    return const {
+      'true',
+      '1',
+      'yes',
+      'y',
+    }.contains(normalized);
+  }
+
+  Map<String, dynamic>? _latestPendingFeedbackVisit(
+      List<Map<String, dynamic>> visits,
+      ) {
+    // Feedback is available only for the most recent actually completed visit.
+    // Once a newer visit is completed, any older unrated feedback expires.
+    final completed = visits.where((visit) {
+      return visit['feedbackEligible'] == true ||
+          _isVisitDoneFromStatus(
+            (
+                visit['status'] ??
+                    visit['visitStatus'] ??
+                    visit['taskStatus'] ??
+                    ''
+            ).toString(),
+          );
+    }).toList();
+
+    if (completed.isEmpty) {
+      return null;
+    }
+
+    completed.sort((a, b) {
+      final aDate =
+      a['visitDate'] is DateTime
+          ? a['visitDate'] as DateTime
+          : _parseVisitDate(
+        (
+            a['date'] ??
+                a['dueDate'] ??
+                ''
+        ).toString(),
+      ) ??
+          DateTime(2000);
+
+      final bDate =
+      b['visitDate'] is DateTime
+          ? b['visitDate'] as DateTime
+          : _parseVisitDate(
+        (
+            b['date'] ??
+                b['dueDate'] ??
+                ''
+        ).toString(),
+      ) ??
+          DateTime(2000);
+
+      return bDate.compareTo(aDate);
+    });
+
+    final latestCompletedVisit = completed.first;
+
+    final alreadySubmitted =
+    _feedbackSubmittedValue(
+      latestCompletedVisit['feedbackSubmitted'],
+    );
+
+    if (alreadySubmitted) {
+      return null;
+    }
+
+    return latestCompletedVisit;
+  }
+
+  Future<void> _openVisitFeedback(
+      Map<String, dynamic> visit,
+      ) async {
+    final nestedBooking =
+    visit['booking'] is Map
+        ? Map<String, dynamic>.from(
+      visit['booking'] as Map,
+    )
+        : <String, dynamic>{};
+
+    final ddbDueDate = _visitDdbDueDateValue(visit);
+
+    final displayDate = (
+        visit['date'] ??
+            visit['dueDate'] ??
+            nestedBooking['dueDate'] ??
+            ''
+    ).toString().trim();
+
+    debugPrint(
+      '⭐ SUBSCRIPTION FEEDBACK OPEN => '
+          'userID=${widget.userId}, '
+          'displayDate=$displayDate, '
+          'ddbDueDate=$ddbDueDate, '
+          'bookingID=${visit['bookingID'] ?? nestedBooking['bookingID'] ?? ''}',
+    );
+
+    if (widget.userId.trim().isEmpty ||
+        ddbDueDate.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Unable to open feedback for this visit.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VisitFeedbackScreen(
+          userId: widget.userId,
+
+          // IMPORTANT:
+          // submitVisitFeedback does an exact GetItem on
+          // PK=userID + SK=dueDate, so send the original DDB key.
+          dueDate: ddbDueDate,
+
+          maaliName: (
+              visit['mali'] ??
+                  nestedBooking['assignedMali'] ??
+                  nestedBooking['maaliName'] ??
+                  ''
+          ).toString(),
+          taskId: (
+              visit['taskID'] ??
+                  nestedBooking['taskID'] ??
+                  ''
+          ).toString(),
+          bookingId: (
+              visit['bookingID'] ??
+                  nestedBooking['bookingID'] ??
+                  ''
+          ).toString(),
+        ),
+      ),
+    );
+
+    if (result == true &&
+        mounted) {
+      await _refreshVisitStatuses();
+      await widget.onRefreshRequested();
+    }
+  }
+
+  Widget _feedbackPromptCard(
+      Map<String, dynamic> visit,
+      ) {
+    final maaliName =
+    (visit['mali'] ?? 'your maali')
+        .toString();
+
+    final dueDate =
+    (visit['date'] ?? visit['dueDate'] ?? '')
+        .toString();
+
+    return LiquidGlassInstructionCard(
+      radius: 24,
+      minHeight: 0,
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment:
+        CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(
+                Icons.check_circle_rounded,
+                color: Color(0xFF00875A),
+                size: 21,
+              ),
+              SizedBox(width: 8),
+              Text(
+                'VISIT COMPLETED',
+                style: TextStyle(
+                  fontSize: 10,
+                  letterSpacing: 1.1,
+                  fontWeight: FontWeight.w900,
+                  color: Color(0xFF00875A),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'How was your visit with $maaliName?',
+            style: AppTextStyles.bodyLarge.copyWith(
+              color: _darkGreen,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          if (dueDate.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Visit: $dueDate',
+              style: AppTextStyles.caption.copyWith(
+                color: AppColors.textSecondary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+          const SizedBox(height: 11),
+          const Row(
+            children: [
+              Icon(Icons.star_rounded, color: _gold, size: 24),
+              Icon(Icons.star_rounded, color: _gold, size: 24),
+              Icon(Icons.star_rounded, color: _gold, size: 24),
+              Icon(Icons.star_rounded, color: _gold, size: 24),
+              Icon(Icons.star_rounded, color: _gold, size: 24),
+            ],
+          ),
+          const SizedBox(height: 13),
+          SizedBox(
+            width: double.infinity,
+            height: 46,
+            child: ElevatedButton.icon(
+              onPressed: () => _openVisitFeedback(
+                visit,
+              ),
+              icon: const Icon(
+                Icons.rate_review_rounded,
+                size: 18,
+              ),
+              label: const Text(
+                'Rate This Visit',
+                style: TextStyle(
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _gold,
+                foregroundColor: Colors.black,
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius:
+                  BorderRadius.circular(23),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final visits = _buildScheduledVisits();
     final selectedVisit = _getSelectedVisit(visits);
+    final pendingFeedbackVisit =
+    _latestPendingFeedbackVisit(visits);
 
-    final planName = (widget.booking['planName'] ?? 'Plan').toString();
+    final planName = (_booking['planName'] ?? 'Plan').toString();
     final assignedMali =
-    (widget.booking['assignedMali'] ?? 'Not assigned').toString();
-    final status = (widget.booking['subscriptionStatus'] ?? 'Active').toString();
+    (_booking['assignedMali'] ?? 'Not assigned').toString();
+    final status =
+    (_booking['subscriptionStatus'] ?? 'Active').toString();
 
     final bookingDate = _getBookingDateForProducts();
 
-    final isPlanExpired = _isPlanExpired(visits);
+    final rawPlanExpired = _isPlanExpired(visits);
+    final isPlanExpired = rawPlanExpired &&
+        !_isRenewalPending &&
+        !_isRenewalStopped;
+
+    final String visitSectionTitle;
+    if (_isRenewalStopped) {
+      visitSectionTitle = 'Grace Visit Completed';
+    } else if (_isRenewalGraceMode) {
+      visitSectionTitle = 'Your Renewal Visits';
+    } else if (isPlanExpired) {
+      visitSectionTitle = 'Completed Visits';
+    } else {
+      visitSectionTitle = 'Upcoming Visits';
+    }
+
+    final selectedVisitIsFrozen =
+        selectedVisit?['isFrozen'] == true;
+
+    final canUseVisitActions =
+        !isPlanExpired &&
+            !_isRenewalStopped &&
+            selectedVisit != null &&
+            !selectedVisitIsFrozen;
+
+    final canEnhanceVisit =
+        !isPlanExpired &&
+            !_isRenewalStopped &&
+            selectedVisit != null &&
+            !selectedVisitIsFrozen;
 
     return PopScope(
       canPop: true,
@@ -3168,10 +4673,11 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
                 visits: visits,
                 isExpired: isPlanExpired,
               ),
+              _renewalStatusCard(),
               _pendingPaymentWidget(),
               const SizedBox(height: 24),
               Text(
-                isPlanExpired ? 'Completed Visits' : 'Upcoming Visit',
+                visitSectionTitle,
                 style: AppTextStyles.sectionTitle.copyWith(
                   fontWeight: FontWeight.w500,
                   color: _darkGreen,
@@ -3180,44 +4686,27 @@ class _SubscriptionDetailsScreenState extends State<SubscriptionDetailsScreen>
               const SizedBox(height: 14),
               _upcomingVisitsSection(visits),
               const SizedBox(height: 18),
-              if (!isPlanExpired) ...[
+
+              if (pendingFeedbackVisit != null) ...[
+                _feedbackPromptCard(
+                  pendingFeedbackVisit,
+                ),
+                const SizedBox(height: 18),
+              ],
+
+              if (canUseVisitActions) ...[
                 _actionButtons(selectedVisit),
                 const SizedBox(height: 18),
               ],
               _assignedExpertCard(assignedMali),
               const SizedBox(height: 22),
-              if (isPlanExpired) ...[
-                _expiredPlanActionsCard(visits),
-              ] else ...[
+              if (isPlanExpired && !_hasRenewal) ...[
+                _renewalPreparingCard(),
+              ] else if (canEnhanceVisit) ...[
                 _enhanceNextVisitHeader(bookingDate),
                 const SizedBox(height: 16),
                 _recommendedProductsPreview(),
                 const SizedBox(height: 8),
-                /*Align(
-                alignment: Alignment.centerLeft,
-                child: _viewOrdersButton(),
-              ),*/
-                /*const SizedBox(height: 18),
-              if (selectedVisit != null &&
-                  selectedVisit['isFuture'] == true &&
-                  selectedVisit['date'] != null)
-                OutlinedButton.icon(
-                  onPressed: _isSkipping
-                      ? null
-                      : () => _showSkipWeekDialog(
-                    selectedVisit['date'].toString(),
-                  ),
-                  icon: const Icon(Icons.skip_next_rounded),
-                  label: Text(_isSkipping ? 'Skipping...' : 'Skip This Week'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.orange.shade700,
-                    side: BorderSide(color: Colors.orange.shade300),
-                    padding: const EdgeInsets.symmetric(vertical: 13),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                  ),
-                ),*/
               ],
               const SizedBox(height: 18),
             ],

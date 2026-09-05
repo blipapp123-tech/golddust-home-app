@@ -20,6 +20,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:ui';
 import 'profile_screen.dart';
 import 'package:video_player/video_player.dart';
+import '../services/salesiq_service.dart';
+import '../services/customer_notification_service.dart';
+import 'visit_feedback_screen.dart';
+import '../FlashSale/flash_sale_home_section.dart';
 
 class HomeView extends StatefulWidget {
   final String userId;
@@ -57,6 +61,8 @@ class _HomeViewState extends State<HomeView> {
   static const String _cachedPendingExpertVisitKey = 'cached_pending_expert_visit';
   static const String _savedProductCartKeyPrefix = 'saved_product_cart';
   final GlobalKey _plansSectionKey = GlobalKey();
+  final GlobalKey<FlashSaleHomeSectionState> _flashSaleKey =
+  GlobalKey<FlashSaleHomeSectionState>();
   int _selectedNavIndex = 0;
   List<Map<String, dynamic>> _cartItems = [];
   late final ScrollController _transformScrollController;
@@ -725,10 +731,41 @@ class _HomeViewState extends State<HomeView> {
       dateOnly == null ? false : dateOnly.isAtSameMomentAs(todayOnly);
       final isFuture = dateOnly == null ? false : dateOnly.isAfter(todayOnly);
 
+      final rawZohoBooking = booking['rawZohoBooking'] is Map
+          ? Map<String, dynamic>.from(
+        booking['rawZohoBooking'] as Map,
+      )
+          : <String, dynamic>{};
+
+      // Exact DynamoDB sort key. This remains DD-MM-YY if that is how
+      // the item is stored in zohoBookings.
+      final ddbDueDate = (
+          booking['ddbDueDate'] ??
+              rawZohoBooking['dueDate'] ??
+              ''
+      ).toString().trim();
+
       // IMPORTANT:
-      // This reads only the separate DynamoDB column named "status".
-      // It does not use taskStatus, subscriptionStatus, or dealStatus.
-      final visitStatus = (booking['status'] ?? '').toString().trim();
+      // Feedback eligibility must use an actual backend completion field.
+      // Some zohoBookings rows currently return status='' while taskStatus
+      // contains 'Completed', so prefer the first NON-EMPTY backend status.
+      final bookingStatus =
+      (booking['status'] ?? '').toString().trim();
+      final bookingTaskStatus =
+      (booking['taskStatus'] ?? '').toString().trim();
+      final rawStatus =
+      (rawZohoBooking['status'] ?? '').toString().trim();
+      final rawTaskStatus =
+      (rawZohoBooking['taskStatus'] ?? '').toString().trim();
+
+      final visitStatus = bookingStatus.isNotEmpty
+          ? bookingStatus
+          : bookingTaskStatus.isNotEmpty
+          ? bookingTaskStatus
+          : rawStatus.isNotEmpty
+          ? rawStatus
+          : rawTaskStatus;
+
       final normalizedVisitStatus = visitStatus.toLowerCase();
 
       final isDoneByStatus = normalizedVisitStatus == 'done' ||
@@ -742,7 +779,9 @@ class _HomeViewState extends State<HomeView> {
       final isDone = isDoneByStatus || isPast;
 
       debugPrint(
-        'VISIT STATUS FROM DDB => date=$date, '
+        'VISIT STATUS FROM DDB => '
+            'displayDate=$date, '
+            'ddbDueDate=$ddbDueDate, '
             'bookingID=${booking['bookingID']}, '
             'status=$visitStatus, '
             'isDone=$isDone',
@@ -753,7 +792,12 @@ class _HomeViewState extends State<HomeView> {
       }
 
       allScheduledVisits.add({
+        // Human-readable/display date.
         'date': date,
+
+        // Exact DynamoDB sort key used for APIs such as submitVisitFeedback.
+        'ddbDueDate': ddbDueDate,
+
         'mali': booking['assignedMali'] ?? booking['maaliName'] ?? 'Not assigned',
         'timeSlot': booking['visitTimeSlot1'] ??
             booking['timeSlot'] ??
@@ -767,6 +811,23 @@ class _HomeViewState extends State<HomeView> {
         'status': visitStatus,
         'visitStatus': visitStatus,
         'isDone': isDone,
+
+        // IMPORTANT:
+        // Feedback is allowed only when the backend status is actually
+        // completed. A past date alone must never make a visit rateable.
+        'feedbackEligible': isDoneByStatus,
+        'feedbackSubmitted': _feedbackSubmittedValue(
+          booking['feedbackSubmitted'] ??
+              rawZohoBooking['feedbackSubmitted'],
+        ),
+        'feedbackId': (
+            booking['feedbackId'] ??
+                rawZohoBooking['feedbackId'] ??
+                ''
+        ).toString(),
+        'feedbackRating':
+        booking['feedbackRating'] ??
+            rawZohoBooking['feedbackRating'],
 
         'booking': booking,
 
@@ -920,10 +981,27 @@ class _HomeViewState extends State<HomeView> {
 
   Future<void> _logout() async {
     try {
+      /*
+     * Unregister the current SalesIQ visitor first.
+     * A SalesIQ failure must not block normal app logout.
+     */
+      try {
+        await SalesIQService.instance.logoutCustomer();
+        debugPrint('✅ SalesIQ visitor unregistered');
+      } catch (salesIQError, stackTrace) {
+        debugPrint(
+          '⚠️ SalesIQ logout failed, continuing normal logout: '
+              '$salesIQError',
+        );
+        debugPrintStack(stackTrace: stackTrace);
+      }
+
+      // Sign out from Firebase.
       await FirebaseAuth.instance.signOut();
 
       final prefs = await SharedPreferences.getInstance();
 
+      // Clear login and customer identity data.
       await prefs.remove('userId');
       await prefs.remove('userID');
       await prefs.remove('firebaseUserId');
@@ -933,12 +1011,25 @@ class _HomeViewState extends State<HomeView> {
       await prefs.remove('maaliUserId');
       await prefs.remove('isLoggedIn');
 
+      // Clear any customer profile values used by SalesIQ.
+      await prefs.remove('userName');
+      await prefs.remove('customerName');
+      await prefs.remove('fullName');
+      await prefs.remove('email');
+      await prefs.remove('userEmail');
+
+      // Clear cached booking data.
       await prefs.remove(_cachedActiveBookingKey);
       await prefs.remove(_cachedPendingExpertVisitKey);
 
+      // Clear all saved product carts for this device.
       final savedCartKeys = prefs
           .getKeys()
-          .where((key) => key.startsWith(_savedProductCartKeyPrefix))
+          .where(
+            (key) => key.startsWith(
+          _savedProductCartKeyPrefix,
+        ),
+      )
           .toList();
 
       for (final key in savedCartKeys) {
@@ -948,12 +1039,17 @@ class _HomeViewState extends State<HomeView> {
       if (!mounted) return;
 
       Get.offAllNamed(AppRoutes.login);
-    } catch (e) {
+    } catch (error, stackTrace) {
+      debugPrint('❌ Logout failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Logout failed. Please try again.'),
+          content: Text(
+            'Logout failed. Please try again.',
+          ),
         ),
       );
     }
@@ -1063,6 +1159,14 @@ class _HomeViewState extends State<HomeView> {
 
       debugPrint('================ HOME DEBUG START ================');
       debugPrint('resolvedUserId: $resolvedUserId');
+
+      // Keep this user's FCM token registered for visit-completion
+      // feedback notifications.
+      unawaited(
+        CustomerNotificationService.instance.registerForUser(
+          resolvedUserId,
+        ),
+      );
 
       // Expert visits are only for expert visit flow.
       // Subscription should not depend on expert visits.
@@ -2496,6 +2600,15 @@ class _HomeViewState extends State<HomeView> {
     normalized['bookingType'] =
         (booking['bookingType'] ?? 'monthlySubscription').toString();
 
+    // Preserve exact DynamoDB key through navigation/caching.
+    normalized['ddbDueDate'] = (
+        booking['ddbDueDate'] ??
+            (booking['rawZohoBooking'] is Map
+                ? (booking['rawZohoBooking'] as Map)['dueDate']
+                : null) ??
+            ''
+    ).toString().trim();
+
     return normalized;
   }
 
@@ -2559,9 +2672,42 @@ class _HomeViewState extends State<HomeView> {
     }
   }
 
+  Future<void> _openSalesIQSupport() async {
+    try {
+      await SalesIQService.instance.openSupport();
+    } catch (error, stackTrace) {
+      debugPrint(
+        '❌ Unable to open SalesIQ support: $error',
+      );
+
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Unable to open support right now. Please try again.',
+          ),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
   Future<void> _handleRefresh() async {
+    final futures = <Future<void>>[];
+
     if (widget.isServiceAvailable) {
-      await _fetchActiveSubscription();
+      futures.add(_fetchActiveSubscription());
+      futures.add(
+        _flashSaleKey.currentState?.refresh(silent: true) ??
+            Future<void>.value(),
+      );
+    }
+
+    if (futures.isNotEmpty) {
+      await Future.wait(futures);
     }
   }
 
@@ -2614,6 +2760,15 @@ class _HomeViewState extends State<HomeView> {
                         _buildTopBar(),
                         const SizedBox(height: 12),
                         _buildHeroBanner(),
+
+                        if (widget.isServiceAvailable)
+                          FlashSaleHomeSection(
+                            key: _flashSaleKey,
+                            userID: _resolvedUserId.isNotEmpty
+                                ? _resolvedUserId
+                                : widget.userId,
+                          ),
+
                         const SizedBox(height: 18),
 
                         if (widget.isServiceAvailable &&
@@ -3052,11 +3207,317 @@ class _HomeViewState extends State<HomeView> {
     );
   }
 
+  bool _feedbackSubmittedValue(dynamic value) {
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+
+    final normalized =
+        value?.toString().trim().toLowerCase() ?? '';
+
+    return const {
+      'true',
+      '1',
+      'yes',
+      'y',
+    }.contains(normalized);
+  }
+
+  bool _isActualCompletedVisit(
+      Map<String, dynamic> visit,
+      ) {
+    if (visit['feedbackEligible'] == true) {
+      return true;
+    }
+
+    final status = (
+        visit['status'] ??
+            visit['visitStatus'] ??
+            visit['taskStatus'] ??
+            ''
+    ).toString().trim().toLowerCase();
+
+    return status == 'done' ||
+        status == 'completed' ||
+        status == 'complete' ||
+        status == 'closed' ||
+        status == 'finished' ||
+        status == 'visit completed' ||
+        status == 'service completed';
+  }
+
+  Map<String, dynamic>? _getPendingFeedbackVisit(
+      Map<String, dynamic> booking,
+      ) {
+    final rawVisits =
+    booking['allScheduledVisits'];
+
+    if (rawVisits is! List ||
+        rawVisits.isEmpty) {
+      return null;
+    }
+
+    final completedVisits = rawVisits
+        .whereType<Map>()
+        .map(
+          (item) =>
+      Map<String, dynamic>.from(item),
+    )
+        .where(_isActualCompletedVisit)
+        .toList();
+
+    if (completedVisits.isEmpty) {
+      return null;
+    }
+
+    // Only the latest completed visit can be rated.
+    // When a newer visit is completed, older missed feedback disappears.
+    completedVisits.sort((a, b) {
+      final aDate = _parseBookedDate(
+        (a['date'] ?? a['dueDate'] ?? '')
+            .toString(),
+      ) ??
+          DateTime(2000);
+
+      final bDate = _parseBookedDate(
+        (b['date'] ?? b['dueDate'] ?? '')
+            .toString(),
+      ) ??
+          DateTime(2000);
+
+      return bDate.compareTo(aDate);
+    });
+
+    final latestCompletedVisit =
+        completedVisits.first;
+
+    final submitted =
+    _feedbackSubmittedValue(
+      latestCompletedVisit['feedbackSubmitted'],
+    );
+
+    if (submitted) {
+      return null;
+    }
+
+    return latestCompletedVisit;
+  }
+
+  Future<void> _openVisitFeedback(
+      Map<String, dynamic> visit,
+      ) async {
+    final userId =
+    _resolvedUserId.isNotEmpty
+        ? _resolvedUserId
+        : widget.userId;
+
+    final nestedBooking =
+    visit['booking'] is Map
+        ? Map<String, dynamic>.from(
+      visit['booking'] as Map,
+    )
+        : <String, dynamic>{};
+
+    final nestedRawZohoBooking =
+    nestedBooking['rawZohoBooking'] is Map
+        ? Map<String, dynamic>.from(
+      nestedBooking['rawZohoBooking'] as Map,
+    )
+        : <String, dynamic>{};
+
+    // submitVisitFeedback performs an exact DynamoDB GetItem using
+    // PK=userID and SK=dueDate. Therefore this MUST be the original
+    // DynamoDB dueDate, not the 4-digit display date.
+    final ddbDueDate = (
+        visit['ddbDueDate'] ??
+            nestedBooking['ddbDueDate'] ??
+            nestedRawZohoBooking['dueDate'] ??
+            visit['dueDate'] ??
+            visit['date'] ??
+            ''
+    ).toString().trim();
+
+    final displayDate = (
+        visit['date'] ??
+            visit['dueDate'] ??
+            nestedBooking['dueDate'] ??
+            ddbDueDate
+    ).toString().trim();
+
+    debugPrint(
+      '⭐ FEEDBACK OPEN => '
+          'userID=$userId, '
+          'displayDate=$displayDate, '
+          'ddbDueDate=$ddbDueDate, '
+          'bookingID=${visit['bookingID'] ?? nestedBooking['bookingID'] ?? ''}',
+    );
+
+    if (userId.trim().isEmpty ||
+        ddbDueDate.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Unable to open feedback for this visit.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VisitFeedbackScreen(
+          userId: userId,
+
+          // IMPORTANT: this is the exact DynamoDB sort key.
+          dueDate: ddbDueDate,
+
+          maaliName: (
+              visit['mali'] ??
+                  nestedBooking['assignedMali'] ??
+                  nestedBooking['maaliName'] ??
+                  ''
+          ).toString(),
+          taskId: (
+              visit['taskID'] ??
+                  nestedBooking['taskID'] ??
+                  ''
+          ).toString(),
+          bookingId: (
+              visit['bookingID'] ??
+                  nestedBooking['bookingID'] ??
+                  ''
+          ).toString(),
+        ),
+      ),
+    );
+
+    if (result == true &&
+        mounted) {
+      await _fetchActiveSubscription();
+    }
+  }
+
+  Widget _buildHomeFeedbackPrompt(
+      Map<String, dynamic> visit,
+      ) {
+    final maaliName = (
+        visit['mali'] ??
+            (visit['booking'] is Map
+                ? (visit['booking'] as Map)['assignedMali']
+                : null) ??
+            'your maali'
+    ).toString();
+
+    final dueDate = (
+        visit['date'] ??
+            visit['dueDate'] ??
+            ''
+    ).toString();
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(
+        top: 14,
+      ),
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF8E8),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: const Color(0xFFFFD77A),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment:
+        CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(
+                Icons.check_circle_rounded,
+                color: Color(0xFF00875A),
+                size: 20,
+              ),
+              SizedBox(width: 8),
+              Text(
+                'VISIT COMPLETED',
+                style: TextStyle(
+                  fontSize: 10,
+                  letterSpacing: 1.1,
+                  fontWeight: FontWeight.w900,
+                  color: Color(0xFF00875A),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 9),
+          Text(
+            'How was your visit with $maaliName?',
+            style: AppTextStyles.bodyLarge.copyWith(
+              color: AppColors.primaryColor,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          if (dueDate.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Visit: $dueDate',
+              style: AppTextStyles.caption.copyWith(
+                color: AppColors.textSecondary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+          const SizedBox(height: 10),
+          const Row(
+            children: [
+              Icon(Icons.star_rounded, color: Color(0xFFFFB72B), size: 22),
+              Icon(Icons.star_rounded, color: Color(0xFFFFB72B), size: 22),
+              Icon(Icons.star_rounded, color: Color(0xFFFFB72B), size: 22),
+              Icon(Icons.star_rounded, color: Color(0xFFFFB72B), size: 22),
+              Icon(Icons.star_rounded, color: Color(0xFFFFB72B), size: 22),
+            ],
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            height: 42,
+            child: ElevatedButton.icon(
+              onPressed: () => _openVisitFeedback(
+                visit,
+              ),
+              icon: const Icon(
+                Icons.rate_review_rounded,
+                size: 18,
+              ),
+              label: const Text(
+                'Rate This Visit',
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor:
+                const Color(0xFFFFB72B),
+                foregroundColor: Colors.black,
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius:
+                  BorderRadius.circular(22),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildCurrentSubscriptionCard(Map<String, dynamic> booking) {
     final planName = _getPlanName(booking);
     final assignedMali = _getAssignedMali(booking);
     final status = _getStatus(booking);
     final nextVisitText = _formatNextVisit(booking);
+    final pendingFeedbackVisit =
+    _getPendingFeedbackVisit(booking);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -3173,6 +3634,11 @@ class _HomeViewState extends State<HomeView> {
                   ],
                 ),
               ),
+
+              if (pendingFeedbackVisit != null)
+                _buildHomeFeedbackPrompt(
+                  pendingFeedbackVisit,
+                ),
 
               const SizedBox(height: 16),
 
@@ -3494,7 +3960,7 @@ class _HomeViewState extends State<HomeView> {
     final List<Widget> cards = [];
 
     if (!hasActivePlan && !hasPendingExpertVisit) {
-      cards.addAll([
+      cards.add(
         _buildQuickActionCard(
           icon: Icons.calendar_month_outlined,
           title: 'Book a Visit',
@@ -3506,21 +3972,28 @@ class _HomeViewState extends State<HomeView> {
             );
           },
         ),
-      ]);
+      );
     }
 
-    cards.addAll([
-      _buildQuickActionCard(
-        icon: Icons.history_outlined,
-        title: 'Reschedule',
-        onTap: _handleRescheduleTap,
-      ),
+    // Show Reschedule only when the customer has a scheduled subscription
+    // visit or a scheduled expert visit.
+    if (hasActivePlan || hasPendingExpertVisit) {
+      cards.add(
+        _buildQuickActionCard(
+          icon: Icons.history_outlined,
+          title: 'Reschedule',
+          onTap: _handleRescheduleTap,
+        ),
+      );
+    }
+
+    cards.add(
       _buildQuickActionCard(
         icon: Icons.support_agent_outlined,
         title: 'Support',
-        onTap: _openWhatsAppSupport,
+        onTap: _openSalesIQSupport,
       ),
-    ]);
+    );
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -4444,7 +4917,7 @@ class _HomeViewState extends State<HomeView> {
                 index: 2,
                 icon: Icons.support_agent_rounded,
                 label: 'Support',
-                onTap: _openWhatsAppSupport,
+                onTap: _openSalesIQSupport,
               ),
               _buildBottomNavItem(
                 index: 3,

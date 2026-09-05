@@ -34,9 +34,9 @@ dependencies:
   video_player: ^2.9.2
   firebase_core: ^3.6.0
   firebase_auth: ^5.3.1
-  firebase_messaging: ^15.2.4
+  firebase_messaging: ^15.2.10
   firebase_analytics: ^11.3.3
-
+  salesiq_mobilisten: ^6.6.11
   sendotp_flutter_sdk:
   onesignal_flutter: ^5.6.0
   package_info_plus: 9.0.1

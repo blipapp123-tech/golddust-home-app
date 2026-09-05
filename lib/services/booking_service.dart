@@ -252,7 +252,17 @@ class BookingService {
 
           'subscriptionStatus': booking['subscriptionStatus'] ?? 'Active',
           'dealStatus': booking['dealStatus'] ?? '',
+
+          // Preserve the real visit-level state from zohoBookings.
+          // Home/feedback eligibility must not lose these fields
+          // during the client-side transformation.
+          'status': booking['status'] ?? '',
           'taskStatus': booking['taskStatus'] ?? '',
+          'feedbackEligible': booking['feedbackEligible'] ?? false,
+          'feedbackSubmitted': booking['feedbackSubmitted'] ?? false,
+          'feedbackId': booking['feedbackId'] ?? '',
+          'feedbackRating': booking['feedbackRating'],
+          'feedbackSubmittedAt': booking['feedbackSubmittedAt'] ?? '',
 
           'startDate': booking['startDate'] ?? '',
           'Current_Cycle_Subscription_Start_Date':
@@ -270,8 +280,19 @@ class BookingService {
 
           'bookedDates': _generateBookedDatesFromDueDates(booking),
 
-          'dueDate': _normalizeDueDateToFullYear(booking['dueDate'] ?? ''),
-          'date': _normalizeDueDateToFullYear(booking['dueDate'] ?? ''),
+          // Exact DynamoDB sort key.
+          // Never normalize this value.
+          'ddbDueDate': (booking['dueDate'] ?? '')
+              .toString()
+              .trim(),
+
+          // Display versions only.
+          'dueDate': _normalizeDueDateToFullYear(
+            booking['dueDate'] ?? '',
+          ),
+          'date': _normalizeDueDateToFullYear(
+            booking['dueDate'] ?? '',
+          ),
           'visitTimeSlot1': booking['visitTimeSlot1'] ?? '',
 
           'Full_Name': booking['Full_Name'] ??
@@ -303,6 +324,12 @@ class BookingService {
           'assignedMali': booking['assignedMali'] ?? '',
           'assignedMaliId': booking['assignedMaliId'] ?? '',
 
+          // Exact DynamoDB sort key.
+          'ddbDueDate': (booking['dueDate'] ?? '')
+              .toString()
+              .trim(),
+
+          // Display versions only.
           'date': _normalizeDueDateToFullYear(booking['dueDate'] ?? ''),
           'dueDate': _normalizeDueDateToFullYear(booking['dueDate'] ?? ''),
           'timeSlot': booking['visitTimeSlot1'] ?? '',
@@ -310,7 +337,13 @@ class BookingService {
 
           'subscriptionStatus': booking['subscriptionStatus'] ?? '',
           'dealStatus': booking['dealStatus'] ?? '',
+          'status': booking['status'] ?? '',
           'taskStatus': booking['taskStatus'] ?? '',
+          'feedbackEligible': booking['feedbackEligible'] ?? false,
+          'feedbackSubmitted': booking['feedbackSubmitted'] ?? false,
+          'feedbackId': booking['feedbackId'] ?? '',
+          'feedbackRating': booking['feedbackRating'],
+          'feedbackSubmittedAt': booking['feedbackSubmittedAt'] ?? '',
 
           'renewalPaymentPending': booking['renewalPaymentPending'] ?? '',
 

@@ -245,6 +245,155 @@ class _ExpertVisitDetailsScreenState extends State<ExpertVisitDetailsScreen> {
     return text[0].toUpperCase() + text.substring(1).toLowerCase();
   }
 
+  dynamic _firstAvailablePlanDetail(
+      Map<String, dynamic> recommendation,
+      ) {
+    const detailKeys = [
+      'planDetails',
+      'planDetail',
+      'customPlanDetails',
+      'customPlanDetail',
+      'scopeOfWork',
+      'workScope',
+      'workDetails',
+      'recommendedWork',
+      'servicesIncluded',
+      'includedServices',
+      'details',
+      'description',
+    ];
+
+    for (final key in detailKeys) {
+      final value = recommendation[key];
+
+      if (value == null) continue;
+      if (value is String && value.trim().isEmpty) continue;
+      if (value is List && value.isEmpty) continue;
+      if (value is Map && value.isEmpty) continue;
+
+      return value;
+    }
+
+    return null;
+  }
+
+  List<String> _normalisePlanDetailLines(dynamic value) {
+    if (value == null) return [];
+
+    if (value is List) {
+      return value
+          .expand((item) => _normalisePlanDetailLines(item))
+          .map((item) => item.trim())
+          .where((item) => item.isNotEmpty)
+          .toList();
+    }
+
+    if (value is Map) {
+      final lines = <String>[];
+
+      value.forEach((key, mapValue) {
+        final cleanKey = key
+            .toString()
+            .replaceAll('_', ' ')
+            .replaceAllMapped(
+          RegExp(r'([a-z])([A-Z])'),
+              (match) => '${match.group(1)} ${match.group(2)}',
+        )
+            .trim();
+
+        final values = _normalisePlanDetailLines(mapValue);
+
+        for (final item in values) {
+          if (cleanKey.isEmpty) {
+            lines.add(item);
+          } else {
+            lines.add('${_capitalizeFirstLetter(cleanKey)}: $item');
+          }
+        }
+      });
+
+      return lines;
+    }
+
+    final rawText = value.toString().trim();
+    if (rawText.isEmpty) return [];
+
+    return rawText
+        .split(RegExp(r'\r?\n|•|\||;'))
+        .map(
+          (line) => line
+          .replaceFirst(RegExp(r'^[-–—]\s*'), '')
+          .trim(),
+    )
+        .where((line) => line.isNotEmpty)
+        .toList();
+  }
+
+  String _firstRecommendationText(
+      Map<String, dynamic> recommendation,
+      List<String> keys,
+      ) {
+    for (final key in keys) {
+      final value = recommendation[key]?.toString().trim() ?? '';
+      if (value.isNotEmpty) return value;
+    }
+
+    return '';
+  }
+
+
+  List<String> _defaultPlanDetails(String planName) {
+    final normalized = planName.trim().toLowerCase();
+
+    if (normalized.contains('bloom')) {
+      return [
+        'Perfect for small balconies and indoor plant setups',
+        'Suitable for gardens with fewer than 10 pots',
+        'Soil loosening, weeding and dry-leaf removal',
+        'Pruning, trimming, fertilisation and watering',
+        'Repotting, leaf cleaning and pest management',
+        'Post-work cleaning and upkeep',
+      ];
+    }
+
+    if (normalized.contains('evergreen')) {
+      return [
+        'Ideal for larger balconies, terraces and plant collections',
+        'Suitable for gardens with 11 to 50 pots',
+        'Soil loosening, weeding and dry-leaf removal',
+        'Pruning, trimming, fertilisation and watering',
+        'Repotting, leaf cleaning and pest management',
+        'Post-work cleaning and upkeep',
+        'Dedicated expert attention once a month',
+      ];
+    }
+
+    if (normalized.contains('nurture')) {
+      return [
+        'Designed for dense gardens and high-maintenance setups',
+        'Suitable for gardens with more than 50 pots',
+        'Deep pruning and structural maintenance',
+        'Soil enrichment, nourishment and moisture management',
+        'Advanced pest and disease treatment',
+        'Repotting, leaf cleaning and plant-health monitoring',
+        'Dedicated expert attention on alternate visits',
+      ];
+    }
+
+    if (normalized.contains('custom')) {
+      return [
+        'Designed specifically for your garden size and care needs',
+        'Flexible number of visits based on the recommended frequency',
+        'Suitable for villas, large terraces and special requirements',
+        'Includes pruning, fertilisation, watering and pest management as required',
+        'Priority expert support',
+        'Customised plant-care strategy',
+      ];
+    }
+
+    return [];
+  }
+
   Future<void> _initZohoPayments() async {
     try {
       await _zohoSdk.initialize(
@@ -1908,8 +2057,232 @@ class _ExpertVisitDetailsScreenState extends State<ExpertVisitDetailsScreen> {
     );
   }
 
+  Widget _buildPushedPlanDetails(
+      Map<String, dynamic> recommendation,
+      ) {
+    final planName = _firstRecommendationText(
+      recommendation,
+      ['planName', 'plan', 'subscriptionPlan'],
+    );
+
+    final defaultDetailLines = _defaultPlanDetails(planName);
+    final detailValue = _firstAvailablePlanDetail(recommendation);
+    final pushedPlanDetailLines = _normalisePlanDetailLines(detailValue);
+
+    final detailLines = <String>[
+      ...defaultDetailLines,
+      ...pushedPlanDetailLines,
+    ];
+
+    final uniqueDetailLines = <String>[];
+    for (final line in detailLines) {
+      if (!uniqueDetailLines.contains(line)) {
+        uniqueDetailLines.add(line);
+      }
+    }
+
+    final duration = _firstRecommendationText(
+      recommendation,
+      [
+        'visitDuration',
+        'durationPerVisit',
+        'serviceDuration',
+        'planDuration',
+        'duration',
+      ],
+    );
+
+    final visitsPerMonth = _firstRecommendationText(
+      recommendation,
+      [
+        'visitsPerMonth',
+        'monthlyVisits',
+        'numberOfVisits',
+      ],
+    );
+
+    final planType = _firstRecommendationText(
+      recommendation,
+      [
+        'planType',
+        'subscriptionType',
+        'careType',
+      ],
+    );
+
+    final visibleDetailLines = uniqueDetailLines.isNotEmpty
+        ? uniqueDetailLines
+        : <String>[
+      'This care plan has been prepared by our expert for your garden.',
+    ];
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF8E8),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: _gold.withOpacity(0.36),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: _gold.withOpacity(0.20),
+                  borderRadius: BorderRadius.circular(13),
+                ),
+                child: const Icon(
+                  Icons.assignment_rounded,
+                  color: _darkGreen,
+                  size: 21,
+                ),
+              ),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Plan Details',
+                      style: AppTextStyles.bodyLarge.copyWith(
+                        fontWeight: FontWeight.w900,
+                        color: _darkGreen,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      'Services and care instructions recommended by your expert.',
+                      style: AppTextStyles.caption.copyWith(
+                        height: 1.35,
+                        fontWeight: FontWeight.w500,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (planType.isNotEmpty ||
+              duration.isNotEmpty ||
+              visitsPerMonth.isNotEmpty) ...[
+            const SizedBox(height: 13),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                if (planType.isNotEmpty)
+                  _buildPlanDetailChip(
+                    Icons.category_outlined,
+                    planType,
+                  ),
+                if (duration.isNotEmpty)
+                  _buildPlanDetailChip(
+                    Icons.schedule_rounded,
+                    duration,
+                  ),
+                if (visitsPerMonth.isNotEmpty)
+                  _buildPlanDetailChip(
+                    Icons.event_repeat_rounded,
+                    '$visitsPerMonth visits/month',
+                  ),
+              ],
+            ),
+          ],
+          const SizedBox(height: 14),
+          ...List.generate(
+            visibleDetailLines.length,
+                (detailIndex) => Padding(
+              padding: EdgeInsets.only(
+                bottom:
+                detailIndex == visibleDetailLines.length - 1 ? 0 : 10,
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 20,
+                    height: 20,
+                    margin: const EdgeInsets.only(top: 1),
+                    decoration: const BoxDecoration(
+                      color: _gold,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.check_rounded,
+                      color: _darkGreen,
+                      size: 14,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      visibleDetailLines[detailIndex],
+                      style: AppTextStyles.caption.copyWith(
+                        height: 1.42,
+                        fontWeight: FontWeight.w700,
+                        color: _darkGreen,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPlanDetailChip(
+      IconData icon,
+      String label,
+      ) {
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: 10,
+        vertical: 7,
+      ),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.88),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: _darkGreen.withOpacity(0.08),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            icon,
+            size: 15,
+            color: _gold,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: AppTextStyles.tiny.copyWith(
+              fontWeight: FontWeight.w800,
+              color: _darkGreen,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildRecommendationCard(int index) {
-    final recommendation = _recommendations[index];
+    final recommendation = Map<String, dynamic>.from(
+      _recommendations[index] as Map,
+    );
 
     final frequency =
         int.tryParse(recommendation['frequency']?.toString() ?? '1') ?? 1;
@@ -2003,6 +2376,10 @@ class _ExpertVisitDetailsScreenState extends State<ExpertVisitDetailsScreen> {
                       ),
                     ],
                   ),
+                  const SizedBox(height: 16),
+
+                  _buildPushedPlanDetails(recommendation),
+
                   const SizedBox(height: 16),
                   Container(
                     width: double.infinity,

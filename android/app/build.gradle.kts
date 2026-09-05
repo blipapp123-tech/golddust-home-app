@@ -36,8 +36,8 @@ android {
         applicationId = "com.rethinkandrevive1.golddustgardening"
         minSdk = 26
         targetSdk = 35
-        versionCode = 55
-        versionName = "55.0"
+        versionCode = 57
+        versionName = "57.0"
     }
 
     signingConfigs {

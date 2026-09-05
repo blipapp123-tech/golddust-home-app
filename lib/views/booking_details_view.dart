@@ -50,6 +50,8 @@ class _BookingDetailsViewState extends State<BookingDetailsView> {
   final TextEditingController societyNameController = TextEditingController();
   final TextEditingController sectorLocalityController =
   TextEditingController();
+  final TextEditingController cityController =
+  TextEditingController(text: 'Noida');
 
   static const Color _darkGreen = Color(0xFF063F20);
   static const Color _cardGreen = Color(0xFF174F2D);
@@ -96,6 +98,7 @@ class _BookingDetailsViewState extends State<BookingDetailsView> {
       towerNumberController.text = widget.initialTowerNumber ?? '';
       societyNameController.text = widget.initialSocietyName ?? '';
       sectorLocalityController.text = widget.initialSectorLocality ?? '';
+      cityController.text = 'Noida';
     } catch (e) {
       debugPrint('❌ Booking details prefill error: $e');
 
@@ -137,6 +140,7 @@ class _BookingDetailsViewState extends State<BookingDetailsView> {
     towerNumberController.dispose();
     societyNameController.dispose();
     sectorLocalityController.dispose();
+    cityController.dispose();
     super.dispose();
   }
 
@@ -245,6 +249,8 @@ class _BookingDetailsViewState extends State<BookingDetailsView> {
       'towerNo': towerNumberController.text.trim(),
       'society': societyNameController.text.trim(),
       'sector': sectorLocalityController.text.trim(),
+      'city': cityController.text.trim(),
+      'City': cityController.text.trim(),
 
       'status': 'Pending',
 
@@ -405,6 +411,7 @@ class _BookingDetailsViewState extends State<BookingDetailsView> {
           _summaryRow('Tower No.', towerNumberController.text.trim()),
           _summaryRow('Society', societyNameController.text.trim()),
           _summaryRow('Sector/Locality', sectorLocalityController.text.trim()),
+          _summaryRow('City', cityController.text.trim()),
         ],
       ),
     );
@@ -791,6 +798,40 @@ class _BookingDetailsViewState extends State<BookingDetailsView> {
                   'Address Details',
                   Icons.location_on_outlined,
                 ),
+                const SizedBox(height: 10),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 11,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF6DF),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                      color: _gold.withOpacity(0.32),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.info_outline_rounded,
+                        color: _darkGreen,
+                        size: 19,
+                      ),
+                      const SizedBox(width: 9),
+                      Expanded(
+                        child: Text(
+                          'Currently serving Noida locations only.',
+                          style: AppTextStyles.caption.copyWith(
+                            fontWeight: FontWeight.w800,
+                            color: _darkGreen,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
                 const SizedBox(height: 14),
                 _buildDetailsCard(
                   children: [
@@ -832,6 +873,14 @@ class _BookingDetailsViewState extends State<BookingDetailsView> {
                       icon: Icons.place_outlined,
                       validator: (v) =>
                           _requiredValidator(v, 'sector/locality'),
+                    ),
+                    const SizedBox(height: 14),
+                    _buildTextField(
+                      controller: cityController,
+                      hint: 'City',
+                      icon: Icons.location_city_rounded,
+                      validator: (v) => _requiredValidator(v, 'city'),
+                      readOnly: true,
                     ),
                   ],
                 ),

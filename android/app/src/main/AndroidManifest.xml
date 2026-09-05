@@ -6,7 +6,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application
         android:label="Gold Dust"
-        android:name="${applicationName}"
+        android:name="com.rethinkandrevive1.golddustgardening.MyFlutterApplication"
         android:icon="@mipmap/ic_launcher">
 
         <meta-data

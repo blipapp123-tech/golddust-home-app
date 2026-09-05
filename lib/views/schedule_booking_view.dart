@@ -202,6 +202,25 @@ class _ScheduleBookingViewState extends State<ScheduleBookingView> {
         normalized.isAtSameMomentAs(tomorrow);
   }
 
+  bool _isEightAmSlot(String rawSlot) {
+    final normalized = rawSlot
+        .trim()
+        .toUpperCase()
+        .replaceAll(RegExp(r'\s+'), '');
+
+    // Handles 8 AM, 08 AM, 8:00 AM, 08:00 AM, 8:00 and 08:00.
+    return RegExp(r'^0?8(?::00)?(?:AM)?$').hasMatch(normalized);
+  }
+
+  List<String> _filteredSlots(dynamic rawSlots) {
+    if (rawSlots is! List) return [];
+
+    return rawSlots
+        .map((slot) => slot.toString().trim())
+        .where((slot) => slot.isNotEmpty && !_isEightAmSlot(slot))
+        .toList();
+  }
+
   List<DateTime> _extractAvailableDates(Map<String, dynamic> data) {
     final List<DateTime> dates = [];
 
@@ -215,10 +234,10 @@ class _ScheduleBookingViewState extends State<ScheduleBookingView> {
         final year = int.parse(parts[2]);
 
         final parsedDate = DateTime(year, month, day);
-        final slots = entry.value;
-        final hasSlots = slots is List && slots.isNotEmpty;
+        final hasSlotsAfterFiltering =
+            _filteredSlots(entry.value).isNotEmpty;
 
-        if (_isDateSelectable(parsedDate) && hasSlots) {
+        if (_isDateSelectable(parsedDate) && hasSlotsAfterFiltering) {
           dates.add(parsedDate);
         }
       } catch (_) {}
@@ -233,13 +252,7 @@ class _ScheduleBookingViewState extends State<ScheduleBookingView> {
   List<String> get _selectedDateSlots {
     if (_selectedDate == null) return [];
 
-    final raw = _availabilityData[_selectedDate];
-
-    if (raw is List) {
-      return raw.map((e) => e.toString()).toList();
-    }
-
-    return [];
+    return _filteredSlots(_availabilityData[_selectedDate]);
   }
 
   Future<void> _fetchAvailability() async {
@@ -257,10 +270,11 @@ class _ScheduleBookingViewState extends State<ScheduleBookingView> {
         if (_availableDates.isNotEmpty) {
           _selectedDate = _formatDateKey(_availableDates.first);
 
-          final slots = _availabilityData[_selectedDate];
-          if (slots is List && slots.isNotEmpty) {
-            _selectedSlot = slots.first.toString();
-          }
+          final slots = _filteredSlots(_availabilityData[_selectedDate]);
+          _selectedSlot = slots.isNotEmpty ? slots.first : null;
+        } else {
+          _selectedDate = null;
+          _selectedSlot = null;
         }
       });
     } catch (e) {
@@ -321,12 +335,11 @@ class _ScheduleBookingViewState extends State<ScheduleBookingView> {
   }
 
   void _selectDate(String date) {
-    final rawSlots = _availabilityData[date];
-    final slots = rawSlots is List ? rawSlots : [];
+    final slots = _filteredSlots(_availabilityData[date]);
 
     setState(() {
       _selectedDate = date;
-      _selectedSlot = slots.isNotEmpty ? slots.first.toString() : null;
+      _selectedSlot = slots.isNotEmpty ? slots.first : null;
     });
   }
 
