@@ -50,6 +50,11 @@ class HomeView extends StatefulWidget {
 }
 
 class _HomeViewState extends State<HomeView> {
+  // TEMPORARY SUPPORT ROUTING
+  // false = WhatsApp
+  // true  = SalesIQ
+  static const bool _useSalesIQSupport = false;
+
   bool hasActivePlan = false;
   bool hasPendingExpertVisit = false;
   Timer? _transformCarouselTimer;
@@ -910,7 +915,7 @@ class _HomeViewState extends State<HomeView> {
               ),
             );
           },
-          onHelpSupportTap: _openWhatsAppSupport,
+          onHelpSupportTap: _openSupport,
           onReferAndEarnTap: _openReferAndEarnScreen,
           onLogoutTap: _confirmLogout,
         ),
@@ -2632,8 +2637,14 @@ class _HomeViewState extends State<HomeView> {
 
   Future<void> _openWhatsAppSupport() async {
     const phoneNumber = '919217206273';
+
+    final customerId = _resolvedUserId.isNotEmpty
+        ? _resolvedUserId
+        : widget.userId;
+
     final message = Uri.encodeComponent(
-      'Hi GoldDust Gardening, I need help with my booking.',
+      'Hi GoldDust Gardening, I need help with my account/booking.\n\n'
+          'Customer ID: $customerId',
     );
 
     final whatsappUri = Uri.parse(
@@ -2651,21 +2662,56 @@ class _HomeViewState extends State<HomeView> {
       );
 
       if (!opened) {
-        await launchUrl(
+        final openedWeb = await launchUrl(
           webWhatsappUri,
           mode: LaunchMode.externalApplication,
         );
+
+        if (!openedWeb && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Unable to open WhatsApp right now.',
+              ),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
       }
-    } catch (_) {
-      final openedWeb = await launchUrl(
-        webWhatsappUri,
-        mode: LaunchMode.externalApplication,
+    } catch (error) {
+      debugPrint(
+        '❌ WhatsApp support launch failed: $error',
       );
 
-      if (!openedWeb && mounted) {
+      try {
+        final openedWeb = await launchUrl(
+          webWhatsappUri,
+          mode: LaunchMode.externalApplication,
+        );
+
+        if (!openedWeb && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Unable to open WhatsApp right now.',
+              ),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      } catch (webError) {
+        debugPrint(
+          '❌ WhatsApp web fallback failed: $webError',
+        );
+
+        if (!mounted) return;
+
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Unable to open WhatsApp right now.'),
+            content: Text(
+              'Unable to open WhatsApp right now.',
+            ),
+            backgroundColor: Colors.red,
           ),
         );
       }
@@ -2692,6 +2738,14 @@ class _HomeViewState extends State<HomeView> {
           backgroundColor: Colors.red,
         ),
       );
+    }
+  }
+
+  Future<void> _openSupport() async {
+    if (_useSalesIQSupport) {
+      await _openSalesIQSupport();
+    } else {
+      await _openWhatsAppSupport();
     }
   }
 
@@ -3868,7 +3922,7 @@ class _HomeViewState extends State<HomeView> {
                     child: SizedBox(
                       height: 42,
                       child: OutlinedButton.icon(
-                        onPressed: _openWhatsAppSupport,
+                        onPressed: _openSupport,
                         icon: const Icon(
                           Icons.support_agent_rounded,
                           size: 16,
@@ -3991,7 +4045,7 @@ class _HomeViewState extends State<HomeView> {
       _buildQuickActionCard(
         icon: Icons.support_agent_outlined,
         title: 'Support',
-        onTap: _openSalesIQSupport,
+        onTap: _openSupport,
       ),
     );
 
@@ -4917,7 +4971,7 @@ class _HomeViewState extends State<HomeView> {
                 index: 2,
                 icon: Icons.support_agent_rounded,
                 label: 'Support',
-                onTap: _openSalesIQSupport,
+                onTap: _openSupport,
               ),
               _buildBottomNavItem(
                 index: 3,
