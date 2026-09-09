@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-
+import 'services/deep_link_service.dart';
 import 'services/salesiq_service.dart';
 import 'services/customer_notification_service.dart';
 import 'firebase_options.dart';
@@ -14,21 +14,41 @@ import 'app/routes.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  debugPrint('✅ Step 1: Flutter binding initialized');
+  debugPrint(
+    '✅ Step 1: Flutter binding initialized',
+  );
 
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  debugPrint('✅ Step 2: Firebase initialized');
+  debugPrint(
+    '✅ Step 2: Firebase initialized',
+  );
 
   FirebaseMessaging.onBackgroundMessage(
     firebaseMessagingBackgroundHandler,
   );
 
-  runApp(const GoldDustHomeApp());
+  /*
+   * Start listening BEFORE runApp.
+   *
+   * This is important when the customer taps the
+   * WhatsApp link while Gold Dust is completely closed.
+   */
+  await DeepLinkService.instance.initialize();
 
-  debugPrint('✅ Step 3: runApp called');
+  debugPrint(
+    '✅ Step 2A: Deep link service initialized',
+  );
+
+  runApp(
+    const GoldDustHomeApp(),
+  );
+
+  debugPrint(
+    '✅ Step 3: runApp called',
+  );
 }
 
 class GoldDustHomeApp extends StatefulWidget {
@@ -45,9 +65,16 @@ class _GoldDustHomeAppState extends State<GoldDustHomeApp> {
     super.initState();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      debugPrint('✅ Step 4: Flutter first frame completed');
+      debugPrint(
+        '✅ Step 4: Flutter first frame completed',
+      );
 
-      unawaited(_initializePostStartupServices());
+      DeepLinkService.instance
+          .markNavigationReady();
+
+      unawaited(
+        _initializePostStartupServices(),
+      );
     });
   }
 

@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-
+import 'package:get/get.dart';
+import '../app/routes.dart';
+import '../services/deep_link_service.dart';
 import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -996,20 +998,43 @@ class _LoginScreenState extends State<LoginScreen> {
     required String maaliUserId,
     required String phoneNumber,
   }) {
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(
-        builder: (_) => HomeView(
-          userId: maaliUserId,
-          isServiceAvailable: true,
-          locationTitle: 'Noida',
-          locationLine: 'Noida, Uttar Pradesh',
-          locationMessage: '',
-          latitude: null,
-          longitude: null,
-        ),
-      ),
-          (route) => false,
+    /*
+   * Tell DeepLinkService that authentication
+   * is now complete.
+   *
+   * If the user originally clicked an app link,
+   * the requested destination is still waiting.
+   */
+    final deepLinkHandled =
+    DeepLinkService.instance.setSession(
+      loggedIn: true,
+      userId: maaliUserId,
+    );
+
+    if (deepLinkHandled) {
+      debugPrint(
+        '🔗 Login completed. '
+            'Continuing pending deep link.',
+      );
+
+      return;
+    }
+
+    /*
+   * No pending deep link.
+   * Continue normal Gold Dust login behaviour.
+   */
+    Get.offAllNamed(
+      AppRoutes.home,
+      arguments: {
+        'userId': maaliUserId,
+        'isServiceAvailable': true,
+        'locationTitle': 'Noida',
+        'locationLine': 'Noida, Uttar Pradesh',
+        'locationMessage': '',
+        'latitude': null,
+        'longitude': null,
+      },
     );
   }
 

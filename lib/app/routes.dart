@@ -3,6 +3,7 @@ import 'package:get/get.dart';
 import '../views/bookings_view.dart';
 import '../views/home_view.dart';
 import '../views/login.dart';
+import '../views/payment_history_screen.dart';
 import '../views/schedule_booking_view.dart';
 import '../views/splash_view.dart';
 import '../services/location_splash_screen.dart';
@@ -14,6 +15,9 @@ class AppRoutes {
   static const String bookings = '/bookings';
   static const String scheduleBooking = '/schedule-booking';
   static const String locationSplash = '/location-splash';
+
+  // Deep-link destinations
+  static const String paymentHistory = '/payment-history';
 
   static final pages = <GetPage>[
     GetPage(
@@ -33,13 +37,24 @@ class AppRoutes {
 
         if (args is Map<String, dynamic>) {
           return HomeView(
-            userId: (args['userId'] ?? args['userID'] ?? '').toString(),
-            isServiceAvailable: args['isServiceAvailable'] == true,
-            locationTitle: (args['locationTitle'] ?? 'Your location').toString(),
-            locationLine: (args['locationLine'] ?? 'Detected location').toString(),
-            locationMessage: (args['locationMessage'] ?? '').toString(),
-            latitude: _toDoubleOrNull(args['latitude']),
-            longitude: _toDoubleOrNull(args['longitude']),
+            userId:
+            (args['userId'] ?? args['userID'] ?? '')
+                .toString(),
+            isServiceAvailable:
+            args['isServiceAvailable'] == true,
+            locationTitle:
+            (args['locationTitle'] ?? 'Your location')
+                .toString(),
+            locationLine:
+            (args['locationLine'] ?? 'Detected location')
+                .toString(),
+            locationMessage:
+            (args['locationMessage'] ?? '')
+                .toString(),
+            latitude:
+            _toDoubleOrNull(args['latitude']),
+            longitude:
+            _toDoubleOrNull(args['longitude']),
           );
         }
 
@@ -48,8 +63,10 @@ class AppRoutes {
             userId: args,
             isServiceAvailable: true,
             locationTitle: 'Noida',
-            locationLine: 'Service available in your area',
-            locationMessage: 'Service available in your area',
+            locationLine:
+            'Service available in your area',
+            locationMessage:
+            'Service available in your area',
           );
         }
 
@@ -57,8 +74,10 @@ class AppRoutes {
           userId: '',
           isServiceAvailable: true,
           locationTitle: 'Noida',
-          locationLine: 'Service available in your area',
-          locationMessage: 'Service available in your area',
+          locationLine:
+          'Service available in your area',
+          locationMessage:
+          'Service available in your area',
         );
       },
     ),
@@ -73,12 +92,43 @@ class AppRoutes {
         if (args is String) {
           userId = args;
         } else if (args is Map<String, dynamic>) {
-          userId = (args['userId'] ?? args['userID'] ?? '').toString();
+          userId =
+              (args['userId'] ??
+                  args['userID'] ??
+                  '')
+                  .toString();
         } else if (args != null) {
           userId = args.toString();
         }
 
-        return BookingsView(userId: userId);
+        return BookingsView(
+          userId: userId,
+        );
+      },
+    ),
+
+    GetPage(
+      name: paymentHistory,
+      page: () {
+        final args = Get.arguments;
+
+        String userId = '';
+
+        if (args is String) {
+          userId = args;
+        } else if (args is Map<String, dynamic>) {
+          userId =
+              (args['userId'] ??
+                  args['userID'] ??
+                  '')
+                  .toString();
+        } else if (args != null) {
+          userId = args.toString();
+        }
+
+        return PaymentHistoryScreen(
+          userId: userId,
+        );
       },
     ),
 
@@ -92,12 +142,18 @@ class AppRoutes {
         if (args is String) {
           userId = args;
         } else if (args is Map<String, dynamic>) {
-          userId = (args['userId'] ?? args['userID'] ?? '').toString();
+          userId =
+              (args['userId'] ??
+                  args['userID'] ??
+                  '')
+                  .toString();
         } else if (args != null) {
           userId = args.toString();
         }
 
-        return ScheduleBookingView(userId: userId);
+        return ScheduleBookingView(
+          userId: userId,
+        );
       },
     ),
 
@@ -111,22 +167,32 @@ class AppRoutes {
         if (args is String) {
           userId = args;
         } else if (args is Map<String, dynamic>) {
-          userId = (args['userId'] ?? args['userID'] ?? '').toString();
+          userId =
+              (args['userId'] ??
+                  args['userID'] ??
+                  '')
+                  .toString();
         } else if (args != null) {
           userId = args.toString();
         }
 
-        return LocationSplashScreen(userId: userId);
+        return LocationSplashScreen(
+          userId: userId,
+        );
       },
     ),
   ];
 
-  static double? _toDoubleOrNull(dynamic value) {
+  static double? _toDoubleOrNull(
+      dynamic value,
+      ) {
     if (value == null) return null;
 
     if (value is double) return value;
 
-    if (value is int) return value.toDouble();
+    if (value is int) {
+      return value.toDouble();
+    }
 
     if (value is String) {
       return double.tryParse(value);

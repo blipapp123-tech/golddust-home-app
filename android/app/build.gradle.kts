@@ -20,7 +20,7 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.rethinkandrevive1.golddustgardening"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -35,9 +35,9 @@ android {
     defaultConfig {
         applicationId = "com.rethinkandrevive1.golddustgardening"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 57
-        versionName = "57.0"
+        targetSdk = 36
+        versionCode = 61
+        versionName = "61.0"
     }
 
     signingConfigs {

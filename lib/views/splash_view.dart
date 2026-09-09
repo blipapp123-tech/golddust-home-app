@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'package:app_tracking_transparency/app_tracking_transparency.dart';
-
+import '../services/deep_link_service.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -42,16 +42,27 @@ class _SplashViewState extends State<SplashView> {
       debugPrint("ATT permission request failed: $e");
     }
   }
+
+
   Future<void> _checkLoginAndNavigate() async {
-    await Future.delayed(const Duration(milliseconds: 1200));
+    await Future.delayed(
+      const Duration(milliseconds: 1200),
+    );
 
-    final prefs = await SharedPreferences.getInstance();
+    final prefs =
+    await SharedPreferences.getInstance();
 
-    final isLoggedIn = prefs.getBool('isLoggedIn') ?? false;
+    final isLoggedIn =
+        prefs.getBool('isLoggedIn') ?? false;
 
-    final userId = prefs.getString('userId')?.trim() ?? '';
-    final maaliUserId = prefs.getString('maaliUserId')?.trim() ?? '';
-    final bookingPhone = prefs.getString('bookingPhone')?.trim() ?? '';
+    final userId =
+        prefs.getString('userId')?.trim() ?? '';
+
+    final maaliUserId =
+        prefs.getString('maaliUserId')?.trim() ?? '';
+
+    final bookingPhone =
+        prefs.getString('bookingPhone')?.trim() ?? '';
 
     String finalUserId = '';
 
@@ -65,7 +76,35 @@ class _SplashViewState extends State<SplashView> {
 
     if (!mounted) return;
 
+    // -------------------------------------------------
+    // LOGGED IN
+    // -------------------------------------------------
+
     if (isLoggedIn && finalUserId.isNotEmpty) {
+      final deepLinkHandled =
+      DeepLinkService.instance.setSession(
+        loggedIn: true,
+        userId: finalUserId,
+      );
+
+      /*
+     * If Gold Dust was launched from something like:
+     *
+     * /my-visits
+     *
+     * DeepLinkService has already navigated.
+     *
+     * Do NOT send the customer back to Home.
+     */
+      if (deepLinkHandled) {
+        debugPrint(
+          '🔗 Splash navigation handled by deep link',
+        );
+
+        return;
+      }
+
+      // Normal app launch
       Get.offAllNamed(
         AppRoutes.home,
         arguments: {
@@ -78,9 +117,35 @@ class _SplashViewState extends State<SplashView> {
           'longitude': null,
         },
       );
-    } else {
-      Get.offAllNamed(AppRoutes.login);
+
+      return;
     }
+
+    // -------------------------------------------------
+    // NOT LOGGED IN
+    // -------------------------------------------------
+
+    final deepLinkHandled =
+    DeepLinkService.instance.setSession(
+      loggedIn: false,
+    );
+
+    /*
+   * DeepLinkService may already have opened Login
+   * while preserving the requested destination.
+   */
+    if (deepLinkHandled) {
+      debugPrint(
+        '🔗 Deep link requires login',
+      );
+
+      return;
+    }
+
+    // Normal logged-out app launch
+    Get.offAllNamed(
+      AppRoutes.login,
+    );
   }
 
   @override
